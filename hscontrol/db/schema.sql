@@ -39,13 +39,14 @@ CREATE UNIQUE INDEX idx_name_provider_identifier ON users(name, provider_identif
 CREATE UNIQUE INDEX idx_name_no_provider_identifier ON users(name) WHERE provider_identifier IS NULL;
 
 -- Unified store for every authenticatable secret (API keys, pre-auth keys,
--- OAuth clients and access tokens), discriminated by kind. Only a hash of the
--- secret is stored (SHA-256; legacy bcrypt/Argon2id until next use); identifier
--- is the public lookup value, unique within a kind. Per-kind columns are sparse
--- by design.
+-- OAuth clients and access tokens) and for federated identities, which hold no
+-- secret, discriminated by kind. Only a hash of the secret is stored (SHA-256;
+-- legacy bcrypt/Argon2id until next use); identifier is the public lookup
+-- value, unique within a kind, and unique across the two kinds an access
+-- token's client_id can name. Per-kind columns are sparse by design.
 CREATE TABLE credentials(
   id integer PRIMARY KEY AUTOINCREMENT,
-  kind text NOT NULL CHECK(kind IN ('api','authkey','oauth_client','oauth_token')),
+  kind text NOT NULL CHECK(kind IN ('api','authkey','oauth_client','oauth_token','federated_identity')),
   identifier text,
   hash blob,
   user_id integer,
@@ -61,13 +62,19 @@ CREATE TABLE credentials(
   expiration datetime,
   revoked datetime,
   created_by_token numeric DEFAULT false,
+  issuer text,
+  subject text,
+  audience text,
+  custom_claim_rules text,
+  updated_at datetime,
 
   CONSTRAINT fk_credentials_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,
-  CONSTRAINT chk_credentials_hash CHECK(hash IS NOT NULL OR revoked IS NOT NULL),
+  CONSTRAINT chk_credentials_hash CHECK(hash IS NOT NULL OR revoked IS NOT NULL OR kind = 'federated_identity'),
   CONSTRAINT chk_credentials_hash_format CHECK(hash IS NULL OR substr(CAST(hash AS TEXT), 1, 1) = '$')
 );
 CREATE UNIQUE INDEX idx_credentials_identifier ON credentials(kind, identifier);
 CREATE INDEX idx_credentials_user_id ON credentials(user_id);
+CREATE UNIQUE INDEX idx_credentials_token_issuer ON credentials(identifier) WHERE kind IN ('oauth_client','federated_identity');
 
 CREATE TABLE nodes(
   id integer PRIMARY KEY AUTOINCREMENT,

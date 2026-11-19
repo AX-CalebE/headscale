@@ -19,6 +19,7 @@ require (
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-chi/metrics v0.1.1
 	github.com/go-gormigrate/gormigrate/v2 v2.1.7
+	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/go-json-experiment/json v1.27.2
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/google/go-cmp v0.7.0
@@ -149,7 +150,6 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.6 // indirect
 	github.com/gaissmai/bart v0.29.0 // indirect
 	github.com/glebarez/go-sqlite v1.22.0 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.9 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go4org/hashtriemap v0.0.0-20260925222741-44e5305f85d9 // indirect

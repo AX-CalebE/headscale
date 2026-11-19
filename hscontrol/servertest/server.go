@@ -59,6 +59,7 @@ type serverConfig struct {
 	dnsResolvers          []string
 	certProvider          hsdns.Provider
 	prefixV4              netip.Prefix
+	federationHTTPClient  *http.Client
 }
 
 func defaultServerConfig() *serverConfig {
@@ -138,6 +139,11 @@ func WithCertificates(provider hsdns.Provider) ServerOption {
 	return func(c *serverConfig) { c.certProvider = provider }
 }
 
+// WithFederationHTTPClient sets the client issuers are fetched with, such as one trusting a TLS test issuer.
+func WithFederationHTTPClient(client *http.Client) ServerOption {
+	return func(c *serverConfig) { c.federationHTTPClient = client }
+}
+
 // WithDNSResolvers sets the global DNS resolvers, overriding the nodes'
 // local DNS.
 func WithDNSResolvers(addrs ...string) ServerOption {
@@ -208,7 +214,7 @@ func NewServer(tb testing.TB, opts ...ServerOption) *TestServer {
 		cfg.DNSConfig.Nameservers.Global = sc.dnsResolvers
 	}
 
-	return start(tb, cfg, sc.ephemeralTimeout, sc.realListener)
+	return start(tb, cfg, sc.ephemeralTimeout, sc.realListener, sc.federationHTTPClient)
 }
 
 // NewServerFromConfig starts cfg, as loaded, as a test server. Only the
@@ -219,17 +225,27 @@ func NewServer(tb testing.TB, opts ...ServerOption) *TestServer {
 func NewServerFromConfig(tb testing.TB, cfg types.Config) *TestServer {
 	tb.Helper()
 
-	return start(tb, cfg, cfg.Node.Ephemeral.InactivityTimeout, false)
+	return start(tb, cfg, cfg.Node.Ephemeral.InactivityTimeout, false, nil)
 }
 
 // start runs cfg through [hscontrol.NewHeadscale], then sets the ephemeral
 // timeout and starts the server's subsystems and listener.
-func start(tb testing.TB, cfg types.Config, ephemeralTimeout time.Duration, realListener bool) *TestServer {
+func start(
+	tb testing.TB,
+	cfg types.Config,
+	ephemeralTimeout time.Duration,
+	realListener bool,
+	federationHTTPClient *http.Client,
+) *TestServer {
 	tb.Helper()
 
 	app, err := hscontrol.NewHeadscale(&cfg)
 	if err != nil {
 		tb.Fatalf("servertest: NewHeadscale: %v", err)
+	}
+
+	if federationHTTPClient != nil {
+		app.SetFederationHTTPClientForTest(tb, federationHTTPClient)
 	}
 
 	// Validate's floor is for clients that reconnect over real networks;

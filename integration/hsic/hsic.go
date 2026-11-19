@@ -1036,24 +1036,9 @@ func (t *HeadscaleInContainer) CreateOAuthClient(
 	ctx context.Context,
 	scopes, tags []string,
 ) (string, string, error) {
-	apiKey, err := t.Execute([]string{"headscale", "apikeys", "create", "--expiration", "24h"})
+	client, err := t.v2Client()
 	if err != nil {
-		return "", "", fmt.Errorf("creating admin api key: %w", err)
-	}
-
-	apiKey = strings.TrimSpace(apiKey)
-
-	client, err := clientv2.NewClientWithResponses(
-		t.GetEndpoint(),
-		clientv2.WithHTTPClient(t.httpClient()),
-		clientv2.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
-			req.Header.Set("Authorization", "Bearer "+apiKey)
-
-			return nil
-		}),
-	)
-	if err != nil {
-		return "", "", fmt.Errorf("building v2 API client: %w", err)
+		return "", "", err
 	}
 
 	keyType := "client"
@@ -1089,6 +1074,66 @@ func (t *HeadscaleInContainer) CreateOAuthClient(
 	}
 
 	return clientID, clientSecret, nil
+}
+
+// CreateFederatedIdentity creates a federated identity trusting issuer via the
+// v2 keys HTTP API (keyType=federated) and returns its client id.
+func (t *HeadscaleInContainer) CreateFederatedIdentity(
+	ctx context.Context,
+	issuer, subject, audience string,
+	tags []string,
+) (string, error) {
+	client, err := t.v2Client()
+	if err != nil {
+		return "", err
+	}
+
+	keyType := "federated"
+	scopes := []string{"auth_keys"}
+
+	resp, err := client.CreateKeyWithResponse(ctx, "-", clientv2.CreateKeyRequest{
+		KeyType:  &keyType,
+		Scopes:   &scopes,
+		Tags:     &tags,
+		Issuer:   &issuer,
+		Subject:  &subject,
+		Audience: &audience,
+	})
+	if err != nil {
+		return "", fmt.Errorf("creating federated identity: %w", err)
+	}
+
+	if resp.JSON200 == nil {
+		return "", fmt.Errorf( //nolint:err113
+			"creating federated identity: status %s: %s", resp.Status(), strings.TrimSpace(string(resp.Body)))
+	}
+
+	return resp.JSON200.Id, nil
+}
+
+// v2Client mints an admin API key and returns a v2 API client that authenticates with it.
+func (t *HeadscaleInContainer) v2Client() (*clientv2.ClientWithResponses, error) {
+	apiKey, err := t.Execute([]string{"headscale", "apikeys", "create", "--expiration", "24h"})
+	if err != nil {
+		return nil, fmt.Errorf("creating admin api key: %w", err)
+	}
+
+	apiKey = strings.TrimSpace(apiKey)
+
+	client, err := clientv2.NewClientWithResponses(
+		t.GetEndpoint(),
+		clientv2.WithHTTPClient(t.httpClient()),
+		clientv2.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+
+			return nil
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("building v2 API client: %w", err)
+	}
+
+	return client, nil
 }
 
 // httpClient returns an HTTP client that trusts this Headscale's TLS CA when TLS

@@ -138,7 +138,8 @@ func TestAPIv2Key_Create_Tagged(t *testing.T) {
 		KeyType:       "auth",
 		Description:   "dev access",
 		ExpirySeconds: 86400,
-		Capabilities:  *taggedCaps("tag:test"),
+		Invalid:       new(false),
+		Capabilities:  taggedCaps("tag:test"),
 		Tags:          []string{"tag:test"},
 	}
 	if diff := cmp.Diff(want, created, cmpopts.IgnoreFields(apiv2.Key{}, "ID", "Key", "Created", "Expires")); diff != "" {
@@ -246,7 +247,8 @@ func TestAPIv2Key_Get(t *testing.T) {
 		KeyType:       "auth",
 		Description:   "dev access",
 		ExpirySeconds: 86400,
-		Capabilities:  *taggedCaps("tag:test"),
+		Invalid:       new(false),
+		Capabilities:  taggedCaps("tag:test"),
 		Tags:          []string{"tag:test"},
 	}
 	if diff := cmp.Diff(want, got, cmpopts.IgnoreFields(apiv2.Key{}, "Created", "Expires")); diff != "" {
@@ -288,7 +290,7 @@ func TestAPIv2Key_Delete(t *testing.T) {
 	// DELETE soft-revokes (Tailscale-faithful): the key stays retrievable with
 	// invalid set and a revoked timestamp, but listings leave it out.
 	got := getKey(t, api, created.ID)
-	assert.True(t, got.Invalid, "revoked key reports invalid")
+	assert.Equal(t, new(true), got.Invalid, "revoked key reports invalid")
 	assert.NotNil(t, got.Revoked, "revoked timestamp is populated")
 	assert.False(t, containsKeyID(listKeys(t, api), created.ID), "revoked key not listed")
 

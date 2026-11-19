@@ -288,6 +288,21 @@ func TestSQLiteMigrationAndDataValidation(t *testing.T) {
 				assert.Equal(t, 2099, node5.Expiry.UTC().Year(), "node5 future expiry preserved")
 			},
 		},
+		// Real database from the commit before the federated identity
+		// migration, which rebuilds credentials and nodes on SQLite. Key
+		// strings are listed in the fixture header.
+		{
+			dbPath: "testdata/sqlite/credentials_federated_identity_migration_test.sql",
+			wantFunc: func(t *testing.T, hsdb *HSDatabase) {
+				t.Helper()
+
+				requireFederationMigration(t, hsdb,
+					"hskey-auth-7c14277c0a36-3784787b3d8f9ee1c7add278f71e97f1c06db8a03b312e2062f048f34c42020a",
+					"hskey-oauthtok-cff564c0cbb5-474d6e5eacd70cf7a6b0fd4db21d484daa995a4dabe9a07cb2389a981208b95c",
+					"6eb0cff8ab48",
+				)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -505,6 +520,21 @@ func TestPostgresMigrationAndDataValidation(t *testing.T) {
 				assert.Greater(t, pak.ID, uint64(9))
 			},
 		},
+		// Real database (pg_dump -Fc) from the commit before the federated
+		// identity migration, made like the SQLite fixture of the same name.
+		{
+			name:   "credentials-federated-identity",
+			dbPath: "testdata/postgres/credentials_federated_identity_migration_test.pssql",
+			wantFunc: func(t *testing.T, hsdb *HSDatabase) {
+				t.Helper()
+
+				requireFederationMigration(t, hsdb,
+					"hskey-auth-9e44e37dd2fb-9b65aa367f5388f2c54abe9dc1e722eda6e841ba804f9943141e7037f99e4578",
+					"hskey-oauthtok-e259e0310033-b48f35a4751aec11dee322f1395f535c528f63151190330d886c30322f6aec5c",
+					"c842735201b2",
+				)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -646,8 +676,9 @@ func TestSQLiteMigrationDanglingCredentialOwner(t *testing.T) {
 	require.Len(t, keys, 1)
 	assert.Nil(t, keys[0].UserID)
 
-	client, err := hsdb.GetOAuthClientByClientID("client000001")
+	client, _, err := hsdb.GetTokenIssuer("client000001")
 	require.NoError(t, err)
+	require.NotNil(t, client)
 	assert.Nil(t, client.UserID)
 }
 

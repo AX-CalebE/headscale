@@ -109,6 +109,9 @@ type Headscale struct {
 	authProvider   AuthProvider
 	mapBatcher     *mapper.Batcher
 
+	// federationHTTPClient is nil outside tests; see SetFederationHTTPClientForTest.
+	federationHTTPClient *http.Client
+
 	// One per long-poll session, held through its Disconnect cleanup, so
 	// shutdown can close state after waiting on it.
 	clientStreamsOpen sync.WaitGroup
@@ -1392,10 +1395,11 @@ func (h *Headscale) HTTPHandler() http.Handler {
 	})
 
 	humaV2Mux, _ := apiv2.Handler(apiv2.Backend{
-		State:     h.state,
-		Change:    h.Change,
-		Cfg:       h.cfg,
-		Connected: h.isConnected,
+		State:                h.state,
+		Change:               h.Change,
+		Cfg:                  h.cfg,
+		Connected:            h.isConnected,
+		FederationHTTPClient: h.federationHTTPClient,
 	})
 
 	return h.createRouter(humaMux, humaV2Mux)
@@ -1445,6 +1449,13 @@ func (h *Headscale) MapBatcher() *mapper.Batcher {
 // before they start the batcher.
 func (h *Headscale) isConnected(id types.NodeID) bool {
 	return h.mapBatcher.IsConnected(id)
+}
+
+// SetFederationHTTPClientForTest sets the client issuers are fetched with, before HTTPHandler, so a test can trust its TLS issuer.
+func (h *Headscale) SetFederationHTTPClientForTest(tb testing.TB, client *http.Client) {
+	tb.Helper()
+
+	h.federationHTTPClient = client
 }
 
 // StartEphemeralGCForTest starts the ephemeral node garbage collector.

@@ -163,6 +163,63 @@ GitHub Action, with the whole string stored as a repository secret:
 Use `authkey` even though upstream marks it deprecated: `oauth-secret` appends its
 own `?…` to the secret, which corrupts `baseURL`.
 
+## Join nodes with workload identity federation
+
+A workload that already holds an OIDC token from its platform (GitHub Actions,
+GitLab CI, a Kubernetes service account, a cloud provider) can join without any
+stored secret. A federated identity trusts one issuer: the Tailscale client
+presents the platform's token at `/api/v2/oauth/token-exchange`, Headscale
+verifies it against the issuer's published keys and returns a 1-hour access
+token with the identity's scopes and tags, and the client mints a single-use
+tagged auth key with it and registers.
+
+Create a federated identity with an admin API key. `issuer` must be an
+`https://` URL serving `/.well-known/openid-configuration`, reachable from
+Headscale:
+
+```shell
+curl -u '<API_KEY>:' https://headscale.example.com/api/v2/tailnet/-/keys --json '{
+  "keyType": "federated",
+  "description": "ci",
+  "scopes": ["auth_keys"],
+  "tags": ["tag:ci"],
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:acme/app:ref:refs/heads/main",
+  "customClaimRules": {"repository_owner": "acme"}
+}'
+```
+
+The answer's `id` is the client id. A token is accepted when:
+
+- its `iss` is `issuer`, its signature verifies and it has not expired;
+- its `aud` contains `audience`. Without one, Headscale generates
+  `<server_url host>/<id>`; request the token for that audience;
+- its `sub` matches `subject`, where `*` matches any run of characters;
+- each claim named in `customClaimRules` matches its pattern the same way. A
+  dotted name such as `repo.name` reaches into nested claims, a double-quoted
+  name such as `"repo.name"` is a claim with a dot in its name, a boolean claim
+  matches `"true"` or `"false"`, and an absent claim never matches, not even
+  `*`. `iss`, `sub` and `aud` cannot be rules; they have their own fields.
+
+`GET`, `PUT` and `DELETE /api/v2/tailnet/-/keys/<id>` read, replace and delete it;
+deleting it ends its access tokens. A listing shows federated identities only
+with `?all=true`. A token needs `federated_keys` to manage them, or
+`federated_keys:read` to read them.
+
+Then point the client at Headscale with the client id and the platform's token.
+Each tag in `--advertise-tags` must be one of the identity's tags, or owned by
+one of them:
+
+```shell
+tailscale up --login-server https://headscale.example.com --advertise-tags tag:ci \
+  --client-id '<id>' --id-token "$ID_TOKEN"
+```
+
+The client id takes the same `ephemeral` and `preauthorized` attributes as an
+OAuth client secret, for example `<id>?ephemeral=false`, but not `baseURL`: the
+exchange goes to `--login-server`. In `tsnet`, set `ClientID` and `IDToken` and
+import `tailscale.com/feature/identityfederation`.
+
 ## Remote control
 
 The `headscale` binary can control a Headscale instance from a remote machine over the HTTP API.

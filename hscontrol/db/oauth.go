@@ -31,6 +31,25 @@ var (
 // the client's tokens beyond the newest this many.
 const maxAccessTokensPerClient = 1000
 
+// tokenIssuerKinds are the credential kinds an access token's ClientID can name.
+var tokenIssuerKinds = []types.CredentialKind{types.CredentialOAuthClient, types.CredentialFederatedIdentity}
+
+// GetTokenIssuer returns the OAuth client or the federated identity clientID names; the other is nil.
+func (hsdb *HSDatabase) GetTokenIssuer(clientID string) (*types.OAuthClient, *types.FederatedIdentity, error) {
+	var cred types.Credential
+
+	err := hsdb.DB.First(&cred, "kind IN ? AND identifier = ?", tokenIssuerKinds, clientID).Error
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if cred.Kind == types.CredentialFederatedIdentity {
+		return nil, credentialToFederatedIdentity(&cred), nil
+	}
+
+	return credentialToOAuthClient(&cred), nil, nil
+}
+
 // validateScopes rejects any value outside the vocabulary in [scope.Known]. An
 // unknown scope satisfies no requirement, so storing one would silently mint a
 // client with fewer permissions than asked for. Every offending scope is
@@ -135,16 +154,6 @@ func (hsdb *HSDatabase) AuthenticateOAuthClient(secretStr string) (*types.OAuthC
 	return credentialToOAuthClient(cred), nil
 }
 
-// GetOAuthClientByClientID returns a [types.OAuthClient] by its public client id.
-func (hsdb *HSDatabase) GetOAuthClientByClientID(clientID string) (*types.OAuthClient, error) {
-	var cred types.Credential
-	if result := hsdb.DB.First(&cred, "kind = ? AND identifier = ?", types.CredentialOAuthClient, clientID); result.Error != nil {
-		return nil, result.Error
-	}
-
-	return credentialToOAuthClient(&cred), nil
-}
-
 // ListOAuthClients returns every [types.OAuthClient].
 func (hsdb *HSDatabase) ListOAuthClients() ([]types.OAuthClient, error) {
 	var creds []types.Credential
@@ -196,6 +205,47 @@ func (hsdb *HSDatabase) MintAccessToken(
 	scopes, tags []string,
 	expiration *time.Time,
 ) (string, *types.OAuthAccessToken, error) {
+	var (
+		tokenStr string
+		cred     *types.Credential
+	)
+
+	// Mint inside a transaction that re-checks the client still exists and is
+	// not revoked, so a mint cannot complete against a client being deleted.
+	err := hsdb.Write(func(tx *gorm.DB) error {
+		var client types.Credential
+
+		err := tx.First(&client, "kind = ? AND identifier = ?", types.CredentialOAuthClient, clientID).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrOAuthClientNotFound
+		}
+
+		if err != nil {
+			return err
+		}
+
+		if client.Revoked != nil {
+			return ErrOAuthClientRevoked
+		}
+
+		tokenStr, cred, err = saveAccessToken(tx, clientID, scopes, tags, expiration)
+
+		return err
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("saving oauth access token: %w", err)
+	}
+
+	return tokenStr, credentialToOAuthAccessToken(cred), nil
+}
+
+// saveAccessToken stores a new access token for clientID and prunes the client's oldest beyond the limit.
+func saveAccessToken(
+	tx *gorm.DB,
+	clientID string,
+	scopes, tags []string,
+	expiration *time.Time,
+) (string, *types.Credential, error) {
 	tokenStr, prefix, hash := generateSecret(types.AccessTokenPrefix)
 
 	scopes = set.SetOf(scopes).Slice()
@@ -216,43 +266,24 @@ func (hsdb *HSDatabase) MintAccessToken(
 		CreatedAt:  &now,
 	}
 
-	// Mint inside a transaction that re-checks the client still exists and is
-	// not revoked, so a mint cannot complete against a client being deleted.
-	err := hsdb.Write(func(tx *gorm.DB) error {
-		var client types.Credential
-
-		err := tx.First(&client, "kind = ? AND identifier = ?", types.CredentialOAuthClient, clientID).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrOAuthClientNotFound
-		}
-
-		if err != nil {
-			return err
-		}
-
-		if client.Revoked != nil {
-			return ErrOAuthClientRevoked
-		}
-
-		err = tx.Save(&cred).Error
-		if err != nil {
-			return err
-		}
-
-		// Under the limit the subquery is NULL and nothing is deleted.
-		newestSurplus := tx.Model(&types.Credential{}).Select("id").
-			Where("kind = ? AND client_id = ?", types.CredentialOAuthToken, clientID).
-			Order("id DESC").Limit(1).Offset(maxAccessTokensPerClient)
-
-		return tx.Where("kind = ? AND client_id = ? AND id <= (?)",
-			types.CredentialOAuthToken, clientID, newestSurplus).
-			Delete(&types.Credential{}).Error
-	})
+	err := tx.Save(&cred).Error
 	if err != nil {
-		return "", nil, fmt.Errorf("saving oauth access token: %w", err)
+		return "", nil, err
 	}
 
-	return tokenStr, credentialToOAuthAccessToken(&cred), nil
+	// Under the limit the subquery is NULL and nothing is deleted.
+	newestSurplus := tx.Model(&types.Credential{}).Select("id").
+		Where("kind = ? AND client_id = ?", types.CredentialOAuthToken, clientID).
+		Order("id DESC").Limit(1).Offset(maxAccessTokensPerClient)
+
+	err = tx.Where("kind = ? AND client_id = ? AND id <= (?)",
+		types.CredentialOAuthToken, clientID, newestSurplus).
+		Delete(&types.Credential{}).Error
+	if err != nil {
+		return "", nil, err
+	}
+
+	return tokenStr, &cred, nil
 }
 
 // AuthenticateAccessToken validates a presented bearer token and returns the
@@ -290,7 +321,7 @@ func (hsdb *HSDatabase) AuthenticateAccessToken(tokenStr string) (*types.OAuthAc
 	// orphan left by manual deletion or a future soft-revoke path.
 	var client types.Credential
 
-	err = hsdb.DB.First(&client, "kind = ? AND identifier = ?", types.CredentialOAuthClient, token.ClientID).Error
+	err = hsdb.DB.First(&client, "kind IN ? AND identifier = ?", tokenIssuerKinds, token.ClientID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && client.Revoked != nil) {
 		return nil, ErrAccessTokenClientRevoked
 	}

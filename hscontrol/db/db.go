@@ -370,6 +370,12 @@ WHERE auth_key_id IN (
 				},
 				Rollback: func(db *gorm.DB) error { return nil },
 			},
+			{
+				// Adds the federated_identity credential kind; a database made from the DDL above already has it.
+				ID:       "202611161200-credentials-federated-identity",
+				Migrate:  migrateCredentialsFederatedIdentity,
+				Rollback: func(db *gorm.DB) error { return nil },
+			},
 		},
 	)
 

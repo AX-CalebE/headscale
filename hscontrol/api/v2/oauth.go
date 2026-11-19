@@ -132,7 +132,8 @@ func oauthTokenHandler(b Backend) http.HandlerFunc {
 func tokenCanAssignTags(granted []scope.Scope) bool {
 	return scope.Grants(granted, scope.AuthKeys) ||
 		scope.Grants(granted, scope.DevicesCore) ||
-		scope.Grants(granted, scope.OAuthKeys)
+		scope.Grants(granted, scope.OAuthKeys) ||
+		scope.Grants(granted, scope.FederatedKeys)
 }
 
 func canAssignAnyTag(tags, scopes []string) bool {

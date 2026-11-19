@@ -8,8 +8,9 @@ import (
 )
 
 // credentialsDDLSQLite matches schema.sql byte-for-byte (the squibble digest is
-// the SQLite source of truth). Only revoked legacy rows may lack a hash, and
-// every stored hash format ($sha256$, $argon2id$, bcrypt $2a$) starts with '$'.
+// the SQLite source of truth). Only revoked legacy rows and federated identities
+// (which hold no secret) may lack a hash, and every stored hash format
+// ($sha256$, $argon2id$, bcrypt $2a$) starts with '$'.
 // TODO(kradalby): in 0.31, with the credentials migration, tighten
 // chk_credentials_hash to hash NOT NULL (needs a migration clearing the
 // hashless revoked rows).
@@ -17,7 +18,7 @@ import (
 //nolint:gosec // DDL, not a credential
 const credentialsDDLSQLite = `CREATE TABLE credentials(
   id integer PRIMARY KEY AUTOINCREMENT,
-  kind text NOT NULL CHECK(kind IN ('api','authkey','oauth_client','oauth_token')),
+  kind text NOT NULL CHECK(kind IN ('api','authkey','oauth_client','oauth_token','federated_identity')),
   identifier text,
   hash blob,
   user_id integer,
@@ -33,9 +34,14 @@ const credentialsDDLSQLite = `CREATE TABLE credentials(
   expiration datetime,
   revoked datetime,
   created_by_token numeric DEFAULT false,
+  issuer text,
+  subject text,
+  audience text,
+  custom_claim_rules text,
+  updated_at datetime,
 
   CONSTRAINT fk_credentials_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,
-  CONSTRAINT chk_credentials_hash CHECK(hash IS NOT NULL OR revoked IS NOT NULL),
+  CONSTRAINT chk_credentials_hash CHECK(hash IS NOT NULL OR revoked IS NOT NULL OR kind = 'federated_identity'),
   CONSTRAINT chk_credentials_hash_format CHECK(hash IS NULL OR substr(CAST(hash AS TEXT), 1, 1) = '$')
 )`
 
@@ -45,7 +51,7 @@ const credentialsDDLSQLite = `CREATE TABLE credentials(
 //nolint:gosec // DDL, not a credential
 const credentialsDDLPostgres = `CREATE TABLE credentials(
   id bigserial PRIMARY KEY,
-  kind text NOT NULL CHECK(kind IN ('api','authkey','oauth_client','oauth_token')),
+  kind text NOT NULL CHECK(kind IN ('api','authkey','oauth_client','oauth_token','federated_identity')),
   identifier text,
   hash bytea,
   user_id bigint,
@@ -61,9 +67,14 @@ const credentialsDDLPostgres = `CREATE TABLE credentials(
   expiration timestamptz,
   revoked timestamptz,
   created_by_token boolean DEFAULT false,
+  issuer text,
+  subject text,
+  audience text,
+  custom_claim_rules text,
+  updated_at timestamptz,
 
   CONSTRAINT fk_credentials_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,
-  CONSTRAINT chk_credentials_hash CHECK(hash IS NOT NULL OR revoked IS NOT NULL),
+  CONSTRAINT chk_credentials_hash CHECK(hash IS NOT NULL OR revoked IS NOT NULL OR kind = 'federated_identity'),
   CONSTRAINT chk_credentials_hash_format CHECK(hash IS NULL OR substring(hash from 1 for 1) = '\x24'::bytea)
 )`
 
@@ -71,7 +82,11 @@ const credentialsDDLPostgres = `CREATE TABLE credentials(
 var credentialIndexes = []string{
 	`CREATE UNIQUE INDEX idx_credentials_identifier ON credentials(kind, identifier)`,
 	`CREATE INDEX idx_credentials_user_id ON credentials(user_id)`,
+	credentialsTokenIssuerIndex,
 }
+
+// credentialsTokenIssuerIndex keeps an access token's client_id naming one issuer across OAuth clients and federated identities.
+const credentialsTokenIssuerIndex = `CREATE UNIQUE INDEX idx_credentials_token_issuer ON credentials(identifier) WHERE kind IN ('oauth_client','federated_identity')`
 
 // ensureCredentialsTable creates the credentials table and its indexes in one
 // transaction, and is a no-op once the table exists. InitSchema's records are
@@ -333,38 +348,6 @@ WHERE schemaname = current_schema()
 GREATEST((SELECT COALESCE(MAX(id), 0) FROM credentials), ?, 1))`, last).Error
 	if err != nil {
 		return fmt.Errorf("advancing credentials id sequence: %w", err)
-	}
-
-	return nil
-}
-
-// sqliteSequence returns the AUTOINCREMENT counter of table, 0 if unset.
-//
-// TODO(kradalby): remove in 0.31 with the credentials migration.
-func sqliteSequence(tx *gorm.DB, table string) (int64, error) {
-	var seq int64
-
-	err := tx.Raw(`SELECT COALESCE(MAX(seq), 0) FROM sqlite_sequence WHERE name = ?`, table).
-		Scan(&seq).Error
-	if err != nil {
-		return 0, fmt.Errorf("reading %s sequence: %w", table, err)
-	}
-
-	return seq, nil
-}
-
-// raiseSQLiteSequence sets the AUTOINCREMENT counter of table to at least seq.
-//
-// TODO(kradalby): remove in 0.31 with the credentials migration.
-func raiseSQLiteSequence(tx *gorm.DB, table string, seq int64) error {
-	res := tx.Exec(`UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?`, seq, table)
-	if res.Error == nil && res.RowsAffected == 0 && seq > 0 {
-		// No row yet: nothing has been inserted into table.
-		res = tx.Exec(`INSERT INTO sqlite_sequence(name, seq) VALUES(?, ?)`, table, seq)
-	}
-
-	if res.Error != nil {
-		return fmt.Errorf("restoring %s sequence: %w", table, res.Error)
 	}
 
 	return nil

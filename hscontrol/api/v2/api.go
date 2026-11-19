@@ -42,6 +42,10 @@ type Backend struct {
 	// online through the disconnect grace period, but only a stream can
 	// carry a c2n request.
 	Connected func(types.NodeID) bool
+	// FederationHTTPClient fetches issuers' discovery documents and keys; nil uses a default client.
+	FederationHTTPClient *http.Client
+
+	verifiers *issuerVerifiers
 }
 
 // security is the requirement applied to authenticated operations: an API key
@@ -101,6 +105,7 @@ func Config() huma.Config {
 // and registers every operation.
 func NewAPI(router chi.Router, backend Backend) huma.API {
 	api := humachi.New(router, Config())
+	backend.verifiers = newIssuerVerifiers(backend.FederationHTTPClient)
 
 	// Must run before Register: Huma snapshots the middleware chain at operation
 	// registration, so a middleware added afterwards would silently never run.
@@ -111,6 +116,7 @@ func NewAPI(router chi.Router, backend Backend) huma.API {
 	// The OAuth token endpoint is a plain route, not a Huma operation (see
 	// oauth.go); register it on the same router.
 	registerOAuthToken(router, backend)
+	registerTokenExchange(router, backend)
 
 	return api
 }

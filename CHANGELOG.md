@@ -35,6 +35,13 @@ when the key's tags or user directly own every requested tag. See
 
 [#3351](https://github.com/juanfont/headscale/pull/3351)
 
+Workload identity federation: a federated identity (`keyType: "federated"` on
+the v2 keys API) trusts an external OIDC issuer, and `tailscale up --client-id
+<id> --id-token <token>` joins a tagged node with the platform's token instead of
+a stored secret. See [the API docs](https://headscale.net/stable/ref/api/).
+
+[#3303](https://github.com/juanfont/headscale/issues/3303)
+
 ### Credentials stored in one table, hashed with SHA-256
 
 API keys, pre-auth keys, OAuth clients and OAuth access tokens now live in a

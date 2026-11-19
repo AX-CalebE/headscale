@@ -120,6 +120,7 @@ func createClient(t *testing.T, baseURL, bearer string, scopes, tags []string) (
 	assert.Equal(t, "client", key.KeyType)
 	require.NotEmpty(t, key.ID, "client id returned")
 	require.NotEmpty(t, key.Key, "secret returned once on create")
+	assert.Equal(t, &apiv2.KeyCapabilities{}, key.Capabilities, "an OAuth client reports empty capabilities")
 
 	return key.ID, key.Key
 }

@@ -1,8 +1,10 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -174,6 +176,10 @@ type ScenarioSpec struct {
 	OIDCUsers     []mockoidc.MockUser
 	OIDCAccessTTL time.Duration
 
+	// OIDCHTTPS serves the mock OIDC server over https with a self-signed
+	// certificate; its CACert must be trusted by whoever fetches from it.
+	OIDCHTTPS bool
+
 	MaxWait time.Duration
 }
 
@@ -278,7 +284,7 @@ func NewScenario(spec ScenarioSpec) (*Scenario, error) {
 			ttl = spec.OIDCAccessTTL
 		}
 
-		err = s.runMockOIDC(ttl, spec.OIDCUsers)
+		err = s.runMockOIDC(ttl, spec.OIDCUsers, spec.OIDCHTTPS)
 		if err != nil {
 			return nil, err
 		}
@@ -1556,8 +1562,97 @@ func (s *Scenario) CreateDERPServer(version string, opts ...dsic.Option) (*dsic.
 }
 
 type scenarioOIDC struct {
-	r   *dockertest.Resource
-	cfg *types.OIDCConfig
+	r      *dockertest.Resource
+	cfg    *types.OIDCConfig
+	caCert []byte
+}
+
+// CACert returns the certificate to trust for an OIDCHTTPS mock, or nil when it serves http.
+func (o *scenarioOIDC) CACert() []byte {
+	return o.caCert
+}
+
+func (o *scenarioOIDC) httpClient() *http.Client {
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	if o.caCert != nil {
+		pool := x509.NewCertPool()
+		pool.AppendCertsFromPEM(o.caCert)
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+		}
+	}
+
+	return client
+}
+
+// IDToken signs the next queued mock user in through the authorization code flow and returns its ID token.
+func (o *scenarioOIDC) IDToken(ctx context.Context) (string, error) {
+	const redirectURI = "http://localhost/callback"
+
+	client := o.httpClient()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+	authorize := url.Values{
+		"client_id":     {o.ClientID()},
+		"redirect_uri":  {redirectURI},
+		"response_type": {"code"},
+		"scope":         {"openid"},
+		"state":         {"state"},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.Issuer()+"/authorize?"+authorize.Encode(), nil)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("authorizing: %w", err)
+	}
+
+	resp.Body.Close()
+
+	location, err := resp.Location()
+	if err != nil {
+		return "", fmt.Errorf("authorizing: status %s: %w", resp.Status, err)
+	}
+
+	token := url.Values{
+		"client_id":     {o.ClientID()},
+		"client_secret": {o.ClientSecret()},
+		"code":          {location.Query().Get("code")},
+		"grant_type":    {"authorization_code"},
+		"redirect_uri":  {redirectURI},
+	}
+
+	req, err = http.NewRequestWithContext(ctx, http.MethodPost, o.Issuer()+"/token", strings.NewReader(token.Encode()))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err = client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("exchanging code: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var body struct {
+		IDToken string `json:"id_token"`
+	}
+
+	err = json.NewDecoder(resp.Body).Decode(&body)
+	if err != nil {
+		return "", fmt.Errorf("exchanging code: status %s: %w", resp.Status, err)
+	}
+
+	if body.IDToken == "" {
+		return "", fmt.Errorf("exchanging code: status %s: %w", resp.Status, errNoIDToken)
+	}
+
+	return body.IDToken, nil
 }
 
 func (o *scenarioOIDC) Issuer() string {
@@ -1590,9 +1685,15 @@ const (
 	defaultAccessTTL       = 10 * time.Minute
 )
 
-var errStatusCodeNotOK = errors.New("status code not OK")
+var (
+	errStatusCodeNotOK     = errors.New("status code not OK")
+	errNoIDToken           = errors.New("no id_token in the token response")
+	errMockOIDCCertMissing = errors.New("mock OIDC certificate not written yet")
+)
 
-func (s *Scenario) runMockOIDC(accessTTL time.Duration, users []mockoidc.MockUser) error {
+const mockOIDCCertPath = "/tmp/mockoidc-cert.pem"
+
+func (s *Scenario) runMockOIDC(accessTTL time.Duration, users []mockoidc.MockUser, https bool) error {
 	port, err := dockertestutil.RandomFreeHostPort()
 	if err != nil {
 		log.Fatalf("finding open port: %s", err)
@@ -1625,6 +1726,13 @@ func (s *Scenario) runMockOIDC(accessTTL time.Duration, users []mockoidc.MockUse
 			"MOCKOIDC_ACCESS_TTL=" + accessTTL.String(),
 			"MOCKOIDC_USERS=" + string(usersJSON),
 		},
+	}
+
+	scheme := "http"
+	if https {
+		scheme = "https"
+
+		mockOidcOptions.Env = append(mockOidcOptions.Env, "MOCKOIDC_TLS_CERT="+mockOIDCCertPath)
 	}
 
 	headscaleBuildOptions := &dockertest.BuildOptions{
@@ -1685,8 +1793,23 @@ func (s *Scenario) runMockOIDC(accessTTL time.Duration, users []mockoidc.MockUse
 	hostEndpoint := net.JoinHostPort(ipAddr, strconv.Itoa(port))
 
 	if err := s.pool.Retry(func() error { //nolint:noinlineerr
-		oidcConfigURL := fmt.Sprintf("http://%s/oidc/.well-known/openid-configuration", hostEndpoint)
-		httpClient := &http.Client{}
+		if https && s.mockOIDC.caCert == nil {
+			var cert bytes.Buffer
+
+			_, err := s.mockOIDC.r.Exec([]string{"cat", mockOIDCCertPath}, dockertest.ExecOptions{StdOut: &cert})
+			if err != nil {
+				return fmt.Errorf("reading mock OIDC certificate: %w", err)
+			}
+
+			if cert.Len() == 0 {
+				return errMockOIDCCertMissing
+			}
+
+			s.mockOIDC.caCert = cert.Bytes()
+		}
+
+		oidcConfigURL := fmt.Sprintf("%s://%s/oidc/.well-known/openid-configuration", scheme, hostEndpoint)
+		httpClient := s.mockOIDC.httpClient()
 		ctx := context.Background()
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, oidcConfigURL, nil)
 
@@ -1709,7 +1832,8 @@ func (s *Scenario) runMockOIDC(accessTTL time.Duration, users []mockoidc.MockUse
 
 	s.mockOIDC.cfg = &types.OIDCConfig{
 		Issuer: types.HTTPURL(fmt.Sprintf(
-			"http://%s/oidc",
+			"%s://%s/oidc",
+			scheme,
 			hostEndpoint,
 		)),
 		ClientID:                   "superclient",

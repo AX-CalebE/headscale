@@ -562,8 +562,20 @@ func (v CredentialView) ClientID() string { return v.ж.ClientID }
 // CreatedByToken marks a pre-auth key an OAuth access token made: a token
 // lists those without all=true.
 func (v CredentialView) CreatedByToken() bool { return v.ж.CreatedByToken }
+
+// Issuer, Subject, Audience and CustomClaimRules are a federated identity's trust settings.
+func (v CredentialView) Issuer() string   { return v.ж.Issuer }
+func (v CredentialView) Subject() string  { return v.ж.Subject }
+func (v CredentialView) Audience() string { return v.ж.Audience }
+func (v CredentialView) CustomClaimRules() views.Map[string, string] {
+	return views.MapOf(v.ж.CustomClaimRules)
+}
 func (v CredentialView) CreatedAt() views.ValuePointer[time.Time] {
 	return views.ValuePointerOf(v.ж.CreatedAt)
+}
+
+func (v CredentialView) UpdatedAt() views.ValuePointer[time.Time] {
+	return views.ValuePointerOf(v.ж.UpdatedAt)
 }
 
 func (v CredentialView) Expiration() views.ValuePointer[time.Time] {
@@ -576,22 +588,27 @@ func (v CredentialView) Revoked() views.ValuePointer[time.Time] {
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _CredentialViewNeedsRegeneration = Credential(struct {
-	ID             uint64
-	Kind           CredentialKind
-	Identifier     string
-	Hash           []byte
-	UserID         *uint
-	User           *User
-	Description    string
-	Scopes         []string
-	Tags           []string
-	Reusable       bool
-	Ephemeral      bool
-	Used           bool
-	LastSeen       *time.Time
-	ClientID       string
-	CreatedByToken bool
-	CreatedAt      *time.Time
-	Expiration     *time.Time
-	Revoked        *time.Time
+	ID               uint64
+	Kind             CredentialKind
+	Identifier       string
+	Hash             []byte
+	UserID           *uint
+	User             *User
+	Description      string
+	Scopes           []string
+	Tags             []string
+	Reusable         bool
+	Ephemeral        bool
+	Used             bool
+	LastSeen         *time.Time
+	ClientID         string
+	CreatedByToken   bool
+	Issuer           string
+	Subject          string
+	Audience         string
+	CustomClaimRules map[string]string
+	CreatedAt        *time.Time
+	UpdatedAt        *time.Time
+	Expiration       *time.Time
+	Revoked          *time.Time
 }{})

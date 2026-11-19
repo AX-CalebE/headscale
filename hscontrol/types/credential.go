@@ -12,6 +12,8 @@ const (
 	CredentialPreAuthKey  CredentialKind = "authkey"
 	CredentialOAuthClient CredentialKind = "oauth_client" //nolint:gosec // discriminator value, not a credential
 	CredentialOAuthToken  CredentialKind = "oauth_token"  //nolint:gosec // discriminator value, not a credential
+
+	CredentialFederatedIdentity CredentialKind = "federated_identity"
 )
 
 // Credential is the unified storage model for every authenticatable secret:
@@ -56,7 +58,14 @@ type Credential struct {
 	// lists those without all=true.
 	CreatedByToken bool `gorm:"default:false"`
 
+	// Issuer, Subject, Audience and CustomClaimRules are a federated identity's trust settings.
+	Issuer           string
+	Subject          string
+	Audience         string
+	CustomClaimRules map[string]string `gorm:"serializer:json"`
+
 	CreatedAt  *time.Time
+	UpdatedAt  *time.Time `gorm:"autoUpdateTime:false"`
 	Expiration *time.Time
 	Revoked    *time.Time
 }

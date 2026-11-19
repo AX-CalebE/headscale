@@ -62,19 +62,30 @@ type ClientSupports struct {
 
 // CreateKeyRequest defines model for CreateKeyRequest.
 type CreateKeyRequest struct {
+	// Audience Value the aud claim must contain; generated when omitted. keyType=federated only.
+	Audience     *string          `json:"audience,omitempty"`
 	Capabilities *KeyCapabilities `json:"capabilities,omitempty"`
-	Description  *string          `json:"description,omitempty"`
+
+	// CustomClaimRules Further claims (dotted paths) and the patterns they must match. keyType=federated only.
+	CustomClaimRules *map[string]string `json:"customClaimRules,omitempty"`
+	Description      *string            `json:"description,omitempty"`
 
 	// ExpirySeconds Lifetime in seconds, 0 to 90 days; 0 or omitted means 90 days. Auth keys only.
 	ExpirySeconds *int64 `json:"expirySeconds,omitempty"`
 
-	// KeyType Key kind: "auth" (default) or "client" (OAuth client).
+	// Issuer https:// issuer of the OIDC tokens to exchange. keyType=federated only.
+	Issuer *string `json:"issuer,omitempty"`
+
+	// KeyType Key kind: "auth" (default), "client" (OAuth client) or "federated" (federated identity).
 	KeyType *string `json:"keyType,omitempty"`
 
-	// Scopes OAuth scopes granted to the client. keyType=client only.
+	// Scopes OAuth scopes granted to the client or federated identity. keyType=client or federated.
 	Scopes *[]string `json:"scopes,omitempty"`
 
-	// Tags Tags the client may assign. keyType=client only.
+	// Subject Pattern the sub claim must match; * matches any characters. keyType=federated only.
+	Subject *string `json:"subject,omitempty"`
+
+	// Tags Tags the client or federated identity may assign. keyType=client or federated.
 	Tags *[]string `json:"tags,omitempty"`
 }
 
@@ -186,19 +197,24 @@ type ErrorModel struct {
 
 // Key defines model for Key.
 type Key struct {
-	Capabilities  KeyCapabilities `json:"capabilities"`
-	Created       time.Time       `json:"created"`
-	Description   *string         `json:"description,omitempty"`
-	Expires       *time.Time      `json:"expires,omitempty"`
-	ExpirySeconds *int64          `json:"expirySeconds,omitempty"`
-	Id            string          `json:"id"`
-	Invalid       bool            `json:"invalid"`
-	Key           *string         `json:"key,omitempty"`
-	KeyType       string          `json:"keyType"`
-	Revoked       *time.Time      `json:"revoked,omitempty"`
-	Scopes        *[]string       `json:"scopes,omitempty"`
-	Tags          *[]string       `json:"tags,omitempty"`
-	UserId        *string         `json:"userId,omitempty"`
+	Audience         *string            `json:"audience,omitempty"`
+	Capabilities     *KeyCapabilities   `json:"capabilities,omitempty"`
+	Created          time.Time          `json:"created"`
+	CustomClaimRules *map[string]string `json:"customClaimRules,omitempty"`
+	Description      *string            `json:"description,omitempty"`
+	Expires          *time.Time         `json:"expires,omitempty"`
+	ExpirySeconds    *int64             `json:"expirySeconds,omitempty"`
+	Id               string             `json:"id"`
+	Invalid          *bool              `json:"invalid,omitempty"`
+	Issuer           *string            `json:"issuer,omitempty"`
+	Key              *string            `json:"key,omitempty"`
+	KeyType          string             `json:"keyType"`
+	Revoked          *time.Time         `json:"revoked,omitempty"`
+	Scopes           *[]string          `json:"scopes,omitempty"`
+	Subject          *string            `json:"subject,omitempty"`
+	Tags             *[]string          `json:"tags,omitempty"`
+	Updated          *time.Time         `json:"updated,omitempty"`
+	UserId           *string            `json:"userId,omitempty"`
 }
 
 // KeyCapabilities defines model for KeyCapabilities.
@@ -347,7 +363,7 @@ type ListDevicesParams struct {
 
 // ListKeysParams defines parameters for ListKeys.
 type ListKeysParams struct {
-	// All Without it, a token sees only the auth keys tokens made.
+	// All Without it, federated identities are left out, and a token sees only the auth keys tokens made.
 	All *bool `form:"all,omitempty" json:"all,omitempty"`
 }
 
@@ -386,6 +402,9 @@ type ValidateACLJSONRequestBody = ValidateACLJSONBody
 
 // CreateKeyJSONRequestBody defines body for CreateKey for application/json ContentType.
 type CreateKeyJSONRequestBody = CreateKeyRequest
+
+// SetKeyJSONRequestBody defines body for SetKey for application/json ContentType.
+type SetKeyJSONRequestBody = CreateKeyRequest
 
 // UpdateTailnetSettingsJSONRequestBody defines body for UpdateTailnetSettings for application/json ContentType.
 type UpdateTailnetSettingsJSONRequestBody = UpdateTailnetSettingsJSONBody
@@ -661,44 +680,66 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v2/tailnet/{tailnet}/devices (the `ListDevices` operationId).
 	ListDevices(ctx context.Context, tailnet string, params *ListDevicesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// ListKeys List auth keys and OAuth clients
+	// ListKeys List auth keys, OAuth clients and federated identities
 	//
-	// A token sees the kinds it can read: `auth_keys:read` for auth keys, `oauth_keys:read` for OAuth clients (an admin API key sees all).
+	// A token sees the kinds it can read: `auth_keys:read` for auth keys, `oauth_keys:read` for OAuth clients, `federated_keys:read` for federated identities (an admin API key sees all). Federated identities are listed only with `all=true`.
 	//
 	// Corresponds with GET /api/v2/tailnet/{tailnet}/keys (the `ListKeys` operationId).
 	ListKeys(ctx context.Context, tailnet string, params *ListKeysParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreateKeyWithBody Create an auth key or OAuth client
+	// CreateKeyWithBody Create an auth key, OAuth client or federated identity
 	//
-	// Requires the `auth_keys` scope for an auth key, or `oauth_keys` for an OAuth client (an admin API key is all-access).
+	// Requires the `auth_keys` scope for an auth key, `oauth_keys` for an OAuth client, or `federated_keys` for a federated identity (an admin API key is all-access).
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with POST /api/v2/tailnet/{tailnet}/keys (the `CreateKey` operationId).
 	CreateKeyWithBody(ctx context.Context, tailnet string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreateKey Create an auth key or OAuth client
+	// CreateKey Create an auth key, OAuth client or federated identity
 	//
-	// Requires the `auth_keys` scope for an auth key, or `oauth_keys` for an OAuth client (an admin API key is all-access).
+	// Requires the `auth_keys` scope for an auth key, `oauth_keys` for an OAuth client, or `federated_keys` for a federated identity (an admin API key is all-access).
 	//
 	// Takes a body of the `application/json` content type.
 	//
 	// Corresponds with POST /api/v2/tailnet/{tailnet}/keys (the `CreateKey` operationId).
 	CreateKey(ctx context.Context, tailnet string, body CreateKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DeleteKey Delete an auth key or OAuth client
+	// DeleteKey Delete an auth key, OAuth client or federated identity
 	//
-	// Requires the `auth_keys` scope for an auth key, or `oauth_keys` for an OAuth client (an admin API key is all-access).
+	// Requires the `auth_keys` scope for an auth key, `oauth_keys` for an OAuth client, or `federated_keys` for a federated identity (an admin API key is all-access).
 	//
 	// Corresponds with DELETE /api/v2/tailnet/{tailnet}/keys/{keyId} (the `DeleteKey` operationId).
 	DeleteKey(ctx context.Context, tailnet string, keyId string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetKey Get an auth key or OAuth client
+	// GetKey Get an auth key, OAuth client or federated identity
 	//
-	// Requires `auth_keys:read` for an auth key, or `oauth_keys:read` for an OAuth client (an admin API key is all-access).
+	// Requires `auth_keys:read` for an auth key, `oauth_keys:read` for an OAuth client, or `federated_keys:read` for a federated identity (an admin API key is all-access).
 	//
 	// Corresponds with GET /api/v2/tailnet/{tailnet}/keys/{keyId} (the `GetKey` operationId).
 	GetKey(ctx context.Context, tailnet string, keyId string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SetKeyWithBody Set a federated identity
+	//
+	// Replaces a federated identity's configuration. Only keyType `federated` is supported.
+	//
+	// Requires the `federated_keys` OAuth scope (an admin API key is all-access).
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /api/v2/tailnet/{tailnet}/keys/{keyId} (the `SetKey` operationId).
+	SetKeyWithBody(ctx context.Context, tailnet string, keyId string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SetKey Set a federated identity
+	//
+	// Replaces a federated identity's configuration. Only keyType `federated` is supported.
+	//
+	// Requires the `federated_keys` OAuth scope (an admin API key is all-access).
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /api/v2/tailnet/{tailnet}/keys/{keyId} (the `SetKey` operationId).
+	SetKey(ctx context.Context, tailnet string, keyId string, body SetKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetTailnetSettings Get tailnet settings
 	//
@@ -1167,9 +1208,9 @@ func (c *Client) ListDevices(ctx context.Context, tailnet string, params *ListDe
 	return c.Client.Do(req)
 }
 
-// ListKeys List auth keys and OAuth clients
+// ListKeys List auth keys, OAuth clients and federated identities
 //
-// A token sees the kinds it can read: `auth_keys:read` for auth keys, `oauth_keys:read` for OAuth clients (an admin API key sees all).
+// A token sees the kinds it can read: `auth_keys:read` for auth keys, `oauth_keys:read` for OAuth clients, `federated_keys:read` for federated identities (an admin API key sees all). Federated identities are listed only with `all=true`.
 //
 // Corresponds with GET /api/v2/tailnet/{tailnet}/keys (the `ListKeys` operationId).
 func (c *Client) ListKeys(ctx context.Context, tailnet string, params *ListKeysParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -1184,9 +1225,9 @@ func (c *Client) ListKeys(ctx context.Context, tailnet string, params *ListKeysP
 	return c.Client.Do(req)
 }
 
-// CreateKeyWithBody Create an auth key or OAuth client
+// CreateKeyWithBody Create an auth key, OAuth client or federated identity
 //
-// Requires the `auth_keys` scope for an auth key, or `oauth_keys` for an OAuth client (an admin API key is all-access).
+// Requires the `auth_keys` scope for an auth key, `oauth_keys` for an OAuth client, or `federated_keys` for a federated identity (an admin API key is all-access).
 //
 // Takes any type of body and a specified content type.
 //
@@ -1203,9 +1244,9 @@ func (c *Client) CreateKeyWithBody(ctx context.Context, tailnet string, contentT
 	return c.Client.Do(req)
 }
 
-// CreateKey Create an auth key or OAuth client
+// CreateKey Create an auth key, OAuth client or federated identity
 //
-// Requires the `auth_keys` scope for an auth key, or `oauth_keys` for an OAuth client (an admin API key is all-access).
+// Requires the `auth_keys` scope for an auth key, `oauth_keys` for an OAuth client, or `federated_keys` for a federated identity (an admin API key is all-access).
 //
 // Takes a body of the `application/json` content type.
 //
@@ -1222,9 +1263,9 @@ func (c *Client) CreateKey(ctx context.Context, tailnet string, body CreateKeyJS
 	return c.Client.Do(req)
 }
 
-// DeleteKey Delete an auth key or OAuth client
+// DeleteKey Delete an auth key, OAuth client or federated identity
 //
-// Requires the `auth_keys` scope for an auth key, or `oauth_keys` for an OAuth client (an admin API key is all-access).
+// Requires the `auth_keys` scope for an auth key, `oauth_keys` for an OAuth client, or `federated_keys` for a federated identity (an admin API key is all-access).
 //
 // Corresponds with DELETE /api/v2/tailnet/{tailnet}/keys/{keyId} (the `DeleteKey` operationId).
 func (c *Client) DeleteKey(ctx context.Context, tailnet string, keyId string, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -1239,13 +1280,55 @@ func (c *Client) DeleteKey(ctx context.Context, tailnet string, keyId string, re
 	return c.Client.Do(req)
 }
 
-// GetKey Get an auth key or OAuth client
+// GetKey Get an auth key, OAuth client or federated identity
 //
-// Requires `auth_keys:read` for an auth key, or `oauth_keys:read` for an OAuth client (an admin API key is all-access).
+// Requires `auth_keys:read` for an auth key, `oauth_keys:read` for an OAuth client, or `federated_keys:read` for a federated identity (an admin API key is all-access).
 //
 // Corresponds with GET /api/v2/tailnet/{tailnet}/keys/{keyId} (the `GetKey` operationId).
 func (c *Client) GetKey(ctx context.Context, tailnet string, keyId string, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetKeyRequest(c.Server, tailnet, keyId)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// SetKeyWithBody Set a federated identity
+//
+// Replaces a federated identity's configuration. Only keyType `federated` is supported.
+//
+// Requires the `federated_keys` OAuth scope (an admin API key is all-access).
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /api/v2/tailnet/{tailnet}/keys/{keyId} (the `SetKey` operationId).
+func (c *Client) SetKeyWithBody(ctx context.Context, tailnet string, keyId string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetKeyRequestWithBody(c.Server, tailnet, keyId, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// SetKey Set a federated identity
+//
+// Replaces a federated identity's configuration. Only keyType `federated` is supported.
+//
+// Requires the `federated_keys` OAuth scope (an admin API key is all-access).
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /api/v2/tailnet/{tailnet}/keys/{keyId} (the `SetKey` operationId).
+func (c *Client) SetKey(ctx context.Context, tailnet string, keyId string, body SetKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetKeyRequest(c.Server, tailnet, keyId, body)
 	if err != nil {
 		return nil, err
 	}
@@ -2373,6 +2456,60 @@ func NewGetKeyRequest(server string, tailnet string, keyId string) (*http.Reques
 	return req, nil
 }
 
+// NewSetKeyRequest calls the generic SetKey builder with application/json body
+func NewSetKeyRequest(server string, tailnet string, keyId string, body SetKeyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSetKeyRequestWithBody(server, tailnet, keyId, "application/json", bodyReader)
+}
+
+// NewSetKeyRequestWithBody constructs an http.Request for the SetKey method, with any body, and a specified content type
+func NewSetKeyRequestWithBody(server string, tailnet string, keyId string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "tailnet", tailnet, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "keyId", keyId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v2/tailnet/%s/keys/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewGetTailnetSettingsRequest constructs an http.Request for the GetTailnetSettings method
 func NewGetTailnetSettingsRequest(server string, tailnet string) (*http.Request, error) {
 	var err error
@@ -2820,50 +2957,72 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v2/tailnet/{tailnet}/devices (the `ListDevices` operationId).
 	ListDevicesWithResponse(ctx context.Context, tailnet string, params *ListDevicesParams, reqEditors ...RequestEditorFn) (*ListDevicesResponse, error)
 
-	// ListKeysWithResponse List auth keys and OAuth clients
+	// ListKeysWithResponse List auth keys, OAuth clients and federated identities
 	//
-	// A token sees the kinds it can read: `auth_keys:read` for auth keys, `oauth_keys:read` for OAuth clients (an admin API key sees all).
+	// A token sees the kinds it can read: `auth_keys:read` for auth keys, `oauth_keys:read` for OAuth clients, `federated_keys:read` for federated identities (an admin API key sees all). Federated identities are listed only with `all=true`.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with GET /api/v2/tailnet/{tailnet}/keys (the `ListKeys` operationId).
 	ListKeysWithResponse(ctx context.Context, tailnet string, params *ListKeysParams, reqEditors ...RequestEditorFn) (*ListKeysResponse, error)
 
-	// CreateKeyWithBodyWithResponse Create an auth key or OAuth client
+	// CreateKeyWithBodyWithResponse Create an auth key, OAuth client or federated identity
 	//
-	// Requires the `auth_keys` scope for an auth key, or `oauth_keys` for an OAuth client (an admin API key is all-access).
+	// Requires the `auth_keys` scope for an auth key, `oauth_keys` for an OAuth client, or `federated_keys` for a federated identity (an admin API key is all-access).
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v2/tailnet/{tailnet}/keys (the `CreateKey` operationId).
 	CreateKeyWithBodyWithResponse(ctx context.Context, tailnet string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateKeyResponse, error)
 
-	// CreateKeyWithResponse Create an auth key or OAuth client
+	// CreateKeyWithResponse Create an auth key, OAuth client or federated identity
 	//
-	// Requires the `auth_keys` scope for an auth key, or `oauth_keys` for an OAuth client (an admin API key is all-access).
+	// Requires the `auth_keys` scope for an auth key, `oauth_keys` for an OAuth client, or `federated_keys` for a federated identity (an admin API key is all-access).
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v2/tailnet/{tailnet}/keys (the `CreateKey` operationId).
 	CreateKeyWithResponse(ctx context.Context, tailnet string, body CreateKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateKeyResponse, error)
 
-	// DeleteKeyWithResponse Delete an auth key or OAuth client
+	// DeleteKeyWithResponse Delete an auth key, OAuth client or federated identity
 	//
-	// Requires the `auth_keys` scope for an auth key, or `oauth_keys` for an OAuth client (an admin API key is all-access).
+	// Requires the `auth_keys` scope for an auth key, `oauth_keys` for an OAuth client, or `federated_keys` for a federated identity (an admin API key is all-access).
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with DELETE /api/v2/tailnet/{tailnet}/keys/{keyId} (the `DeleteKey` operationId).
 	DeleteKeyWithResponse(ctx context.Context, tailnet string, keyId string, reqEditors ...RequestEditorFn) (*DeleteKeyResponse, error)
 
-	// GetKeyWithResponse Get an auth key or OAuth client
+	// GetKeyWithResponse Get an auth key, OAuth client or federated identity
 	//
-	// Requires `auth_keys:read` for an auth key, or `oauth_keys:read` for an OAuth client (an admin API key is all-access).
+	// Requires `auth_keys:read` for an auth key, `oauth_keys:read` for an OAuth client, or `federated_keys:read` for a federated identity (an admin API key is all-access).
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with GET /api/v2/tailnet/{tailnet}/keys/{keyId} (the `GetKey` operationId).
 	GetKeyWithResponse(ctx context.Context, tailnet string, keyId string, reqEditors ...RequestEditorFn) (*GetKeyResponse, error)
+
+	// SetKeyWithBodyWithResponse Set a federated identity
+	//
+	// Replaces a federated identity's configuration. Only keyType `federated` is supported.
+	//
+	// Requires the `federated_keys` OAuth scope (an admin API key is all-access).
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /api/v2/tailnet/{tailnet}/keys/{keyId} (the `SetKey` operationId).
+	SetKeyWithBodyWithResponse(ctx context.Context, tailnet string, keyId string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetKeyResponse, error)
+
+	// SetKeyWithResponse Set a federated identity
+	//
+	// Replaces a federated identity's configuration. Only keyType `federated` is supported.
+	//
+	// Requires the `federated_keys` OAuth scope (an admin API key is all-access).
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /api/v2/tailnet/{tailnet}/keys/{keyId} (the `SetKey` operationId).
+	SetKeyWithResponse(ctx context.Context, tailnet string, keyId string, body SetKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*SetKeyResponse, error)
 
 	// GetTailnetSettingsWithResponse Get tailnet settings
 	//
@@ -4501,6 +4660,89 @@ func (r GetKeyResponse) ContentType() string {
 	return ""
 }
 
+type SetKeyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *Key
+	// ApplicationproblemJSON400 the response for an HTTP 400 `application/problem+json` response
+	ApplicationproblemJSON400 *ErrorModel
+	// ApplicationproblemJSON401 the response for an HTTP 401 `application/problem+json` response
+	ApplicationproblemJSON401 *ErrorModel
+	// ApplicationproblemJSON403 the response for an HTTP 403 `application/problem+json` response
+	ApplicationproblemJSON403 *ErrorModel
+	// ApplicationproblemJSON404 the response for an HTTP 404 `application/problem+json` response
+	ApplicationproblemJSON404 *ErrorModel
+	// ApplicationproblemJSON422 the response for an HTTP 422 `application/problem+json` response
+	ApplicationproblemJSON422 *ErrorModel
+	// ApplicationproblemJSON500 the response for an HTTP 500 `application/problem+json` response
+	ApplicationproblemJSON500 *ErrorModel
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r SetKeyResponse) GetJSON200() *Key {
+	return r.JSON200
+}
+
+// GetApplicationproblemJSON400 returns the response for an HTTP 400 `application/problem+json` response
+func (r SetKeyResponse) GetApplicationproblemJSON400() *ErrorModel {
+	return r.ApplicationproblemJSON400
+}
+
+// GetApplicationproblemJSON401 returns the response for an HTTP 401 `application/problem+json` response
+func (r SetKeyResponse) GetApplicationproblemJSON401() *ErrorModel {
+	return r.ApplicationproblemJSON401
+}
+
+// GetApplicationproblemJSON403 returns the response for an HTTP 403 `application/problem+json` response
+func (r SetKeyResponse) GetApplicationproblemJSON403() *ErrorModel {
+	return r.ApplicationproblemJSON403
+}
+
+// GetApplicationproblemJSON404 returns the response for an HTTP 404 `application/problem+json` response
+func (r SetKeyResponse) GetApplicationproblemJSON404() *ErrorModel {
+	return r.ApplicationproblemJSON404
+}
+
+// GetApplicationproblemJSON422 returns the response for an HTTP 422 `application/problem+json` response
+func (r SetKeyResponse) GetApplicationproblemJSON422() *ErrorModel {
+	return r.ApplicationproblemJSON422
+}
+
+// GetApplicationproblemJSON500 returns the response for an HTTP 500 `application/problem+json` response
+func (r SetKeyResponse) GetApplicationproblemJSON500() *ErrorModel {
+	return r.ApplicationproblemJSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r SetKeyResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r SetKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SetKeyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r SetKeyResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type GetTailnetSettingsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -5165,9 +5407,9 @@ func (c *ClientWithResponses) ListDevicesWithResponse(ctx context.Context, tailn
 	return ParseListDevicesResponse(rsp)
 }
 
-// ListKeysWithResponse List auth keys and OAuth clients
+// ListKeysWithResponse List auth keys, OAuth clients and federated identities
 //
-// A token sees the kinds it can read: `auth_keys:read` for auth keys, `oauth_keys:read` for OAuth clients (an admin API key sees all).
+// A token sees the kinds it can read: `auth_keys:read` for auth keys, `oauth_keys:read` for OAuth clients, `federated_keys:read` for federated identities (an admin API key sees all). Federated identities are listed only with `all=true`.
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -5180,9 +5422,9 @@ func (c *ClientWithResponses) ListKeysWithResponse(ctx context.Context, tailnet 
 	return ParseListKeysResponse(rsp)
 }
 
-// CreateKeyWithBodyWithResponse Create an auth key or OAuth client
+// CreateKeyWithBodyWithResponse Create an auth key, OAuth client or federated identity
 //
-// Requires the `auth_keys` scope for an auth key, or `oauth_keys` for an OAuth client (an admin API key is all-access).
+// Requires the `auth_keys` scope for an auth key, `oauth_keys` for an OAuth client, or `federated_keys` for a federated identity (an admin API key is all-access).
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -5195,9 +5437,9 @@ func (c *ClientWithResponses) CreateKeyWithBodyWithResponse(ctx context.Context,
 	return ParseCreateKeyResponse(rsp)
 }
 
-// CreateKeyWithResponse Create an auth key or OAuth client
+// CreateKeyWithResponse Create an auth key, OAuth client or federated identity
 //
-// Requires the `auth_keys` scope for an auth key, or `oauth_keys` for an OAuth client (an admin API key is all-access).
+// Requires the `auth_keys` scope for an auth key, `oauth_keys` for an OAuth client, or `federated_keys` for a federated identity (an admin API key is all-access).
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -5210,9 +5452,9 @@ func (c *ClientWithResponses) CreateKeyWithResponse(ctx context.Context, tailnet
 	return ParseCreateKeyResponse(rsp)
 }
 
-// DeleteKeyWithResponse Delete an auth key or OAuth client
+// DeleteKeyWithResponse Delete an auth key, OAuth client or federated identity
 //
-// Requires the `auth_keys` scope for an auth key, or `oauth_keys` for an OAuth client (an admin API key is all-access).
+// Requires the `auth_keys` scope for an auth key, `oauth_keys` for an OAuth client, or `federated_keys` for a federated identity (an admin API key is all-access).
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -5225,9 +5467,9 @@ func (c *ClientWithResponses) DeleteKeyWithResponse(ctx context.Context, tailnet
 	return ParseDeleteKeyResponse(rsp)
 }
 
-// GetKeyWithResponse Get an auth key or OAuth client
+// GetKeyWithResponse Get an auth key, OAuth client or federated identity
 //
-// Requires `auth_keys:read` for an auth key, or `oauth_keys:read` for an OAuth client (an admin API key is all-access).
+// Requires `auth_keys:read` for an auth key, `oauth_keys:read` for an OAuth client, or `federated_keys:read` for a federated identity (an admin API key is all-access).
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -5238,6 +5480,40 @@ func (c *ClientWithResponses) GetKeyWithResponse(ctx context.Context, tailnet st
 		return nil, err
 	}
 	return ParseGetKeyResponse(rsp)
+}
+
+// SetKeyWithBodyWithResponse Set a federated identity
+//
+// Replaces a federated identity's configuration. Only keyType `federated` is supported.
+//
+// Requires the `federated_keys` OAuth scope (an admin API key is all-access).
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v2/tailnet/{tailnet}/keys/{keyId} (the `SetKey` operationId).
+func (c *ClientWithResponses) SetKeyWithBodyWithResponse(ctx context.Context, tailnet string, keyId string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetKeyResponse, error) {
+	rsp, err := c.SetKeyWithBody(ctx, tailnet, keyId, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetKeyResponse(rsp)
+}
+
+// SetKeyWithResponse Set a federated identity
+//
+// Replaces a federated identity's configuration. Only keyType `federated` is supported.
+//
+// Requires the `federated_keys` OAuth scope (an admin API key is all-access).
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v2/tailnet/{tailnet}/keys/{keyId} (the `SetKey` operationId).
+func (c *ClientWithResponses) SetKeyWithResponse(ctx context.Context, tailnet string, keyId string, body SetKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*SetKeyResponse, error) {
+	rsp, err := c.SetKey(ctx, tailnet, keyId, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetKeyResponse(rsp)
 }
 
 // GetTailnetSettingsWithResponse Get tailnet settings
@@ -6570,6 +6846,74 @@ func ParseGetKeyResponse(rsp *http.Response) (*GetKeyResponse, error) {
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSetKeyResponse parses an HTTP response from a SetKeyWithResponse call
+func ParseSetKeyResponse(rsp *http.Response) (*SetKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SetKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Key
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
 		var dest ErrorModel

@@ -32,6 +32,10 @@ const (
 	OAuthKeys     Scope = "oauth_keys"
 	OAuthKeysRead Scope = "oauth_keys:read"
 
+	// FederatedKeys gates managing federated identities (keyType:"federated").
+	FederatedKeys     Scope = "federated_keys"
+	FederatedKeysRead Scope = "federated_keys:read"
+
 	DevicesCore     Scope = "devices:core"
 	DevicesCoreRead Scope = "devices:core:read"
 
@@ -60,6 +64,7 @@ func Known() []Scope {
 		All, AllRead,
 		AuthKeys, AuthKeysRead,
 		OAuthKeys, OAuthKeysRead,
+		FederatedKeys, FederatedKeysRead,
 		DevicesCore, DevicesCoreRead,
 		DevicesRoutes, DevicesRoutesRead,
 		DevicesPostureAttributes, DevicesPostureAttributesRead,

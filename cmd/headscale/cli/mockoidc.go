@@ -2,9 +2,17 @@ package cli
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -108,7 +116,20 @@ func mockOIDC() error {
 		return err
 	}
 
-	err = mock.Start(listener, nil)
+	var tlsConfig *tls.Config
+
+	if certPath := os.Getenv("MOCKOIDC_TLS_CERT"); certPath != "" {
+		addr, _ := listener.Addr().(*net.TCPAddr)
+
+		tlsConfig, err = selfSignedTLS(addr.IP, certPath)
+		if err != nil {
+			return err
+		}
+
+		listener = tls.NewListener(listener, tlsConfig)
+	}
+
+	err = mock.Start(listener, tlsConfig)
 	if err != nil {
 		return err
 	}
@@ -120,6 +141,41 @@ func mockOIDC() error {
 	<-c
 
 	return nil
+}
+
+// selfSignedTLS issues a self-signed certificate for ip, writes it as PEM to certPath for clients to trust, and returns a server config using it.
+func selfSignedTLS(ip net.IP, certPath string) (*tls.Config, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: ip.String()},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		IPAddresses:           []net.IP{ip},
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, err
+	}
+
+	err = os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644) //nolint:gosec // A public certificate.
+	if err != nil {
+		return nil, err
+	}
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
+		MinVersion:   tls.VersionTLS12,
+	}, nil
 }
 
 func getMockOIDC(clientID string, clientSecret string, users []mockoidc.MockUser) (*mockoidc.MockOIDC, error) {

@@ -31,7 +31,7 @@ headscale's own conventions. The headscale-native admin API stays at `/api/v1`
   sends) or **Bearer**: an admin API key (`hskey-api-…`), or an OAuth access
   token (`hskey-oauthtok-…`). See `authMiddleware`.
 - Each operation declares the Tailscale scope it requires (`auth_keys`,
-  `oauth_keys`, `devices:core`, `devices:routes`,
+  `oauth_keys`, `federated_keys`, `devices:core`, `devices:routes`,
   `devices:posture_attributes`, `policy_file`, `feature_settings`, each with a
   `:read` subset, plus `all`/`all:read`).
   `requireScope` records it both for the middleware and in the generated
@@ -92,6 +92,31 @@ tolerating `RequestTags` that are a subset of the key's tags.
 `TestAPIv2OAuthTailscaleClientAuthKey` in `servertest/` drives the real client
 code through this; `.github/workflows/tailscale-action-integration.yaml` covers
 the GitHub Action. User-facing setup is in `docs/ref/api.md`.
+
+## Workload identity federation
+
+- **Federated identities** are `keyType:"federated"` on the keys endpoint, as in
+  Tailscale, plus `PUT` (`setKey`) to replace one. They are `credentials` rows of
+  kind `federated_identity`, without a secret (`db/federated.go`). An access
+  token's `client_id` names an `oauth_client` or `federated_identity` row, and
+  `idx_credentials_token_issuer` keeps that id unique across the two kinds.
+- **Exchange endpoint** `POST /api/v2/oauth/token-exchange` (`federated.go`) is a
+  plain form handler like `/oauth/token`, but answers with Tailscale's bodies:
+  `{"message":…}` JSON, or plain-text `invalid request` for an unknown client.
+  It verifies the JWT's signature, issuer and expiry with a go-oidc verifier
+  cached per issuer, whose `issuerKeys` fetches the issuer's JWKS on a key miss.
+  The discovery document and keys are fetched again once older than
+  `issuerCacheMaxAge`, keeping the old copy if that fetch fails. Discovery and
+  key fetches each run one at a time per issuer, and a failed discovery or any
+  key fetch is not repeated within `issuerRefetchInterval`. A failure to reach
+  the issuer is answered 502 and logged as an error, not refused as a bad token.
+  It then
+  checks `aud`, `sub` and the custom claim rules against the identity row read
+  in the transaction that mints the access token (`db.ExchangeFederatedToken`).
+- Issuers must be `https://`. `Backend.FederationHTTPClient` (set in tests
+  through `servertest.WithFederationHTTPClient`) lets a test trust its own TLS
+  issuer. `TestAPIv2FederatedTailscaleClient` drives the real client's
+  `feature/identityfederation` through it.
 
 ## Adding an endpoint
 

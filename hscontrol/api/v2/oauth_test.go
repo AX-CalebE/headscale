@@ -3,9 +3,20 @@ package apiv2
 import (
 	"testing"
 
+	"github.com/juanfont/headscale/hscontrol/scope"
 	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestTokenCanAssignTags(t *testing.T) {
+	for _, s := range []scope.Scope{scope.AuthKeys, scope.DevicesCore, scope.OAuthKeys, scope.FederatedKeys, scope.All} {
+		assert.True(t, tokenCanAssignTags([]scope.Scope{s}), s)
+	}
+
+	for _, s := range []scope.Scope{scope.FederatedKeysRead, scope.OAuthKeysRead, scope.Users, scope.AllRead} {
+		assert.False(t, tokenCanAssignTags([]scope.Scope{s}), s)
+	}
+}
 
 // TestNarrowTagsRejectsMalformed asserts the token endpoint validates tag
 // format at the trust boundary. An "all"-scope client may assign any tag, but a

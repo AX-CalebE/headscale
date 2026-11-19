@@ -34,6 +34,23 @@ func credentialToOAuthClient(c *types.Credential) *types.OAuthClient {
 	}
 }
 
+func credentialToFederatedIdentity(c *types.Credential) *types.FederatedIdentity {
+	return &types.FederatedIdentity{
+		ID:               c.ID,
+		ClientID:         c.Identifier,
+		Issuer:           c.Issuer,
+		Subject:          c.Subject,
+		Audience:         c.Audience,
+		CustomClaimRules: c.CustomClaimRules,
+		Description:      c.Description,
+		Scopes:           c.Scopes,
+		Tags:             c.Tags,
+		UserID:           c.UserID,
+		CreatedAt:        c.CreatedAt,
+		UpdatedAt:        c.UpdatedAt,
+	}
+}
+
 // credentialToPreAuthKey projects a unified credentials row onto the
 // [types.PreAuthKey] shape. The lookup prefix is stored as the row's identifier;
 // the User association is carried through when preloaded.

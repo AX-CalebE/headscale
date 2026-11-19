@@ -26,6 +26,7 @@ type ControlServer interface {
 	GetEndpoint() string
 	GetIPEndpoint() string
 	CreateOAuthClient(ctx context.Context, scopes, tags []string) (string, string, error)
+	CreateFederatedIdentity(ctx context.Context, issuer, subject, audience string, tags []string) (string, error)
 	WaitForRunning() error
 	Restart() error
 	CreateUser(user string) (*clientv1.User, error)

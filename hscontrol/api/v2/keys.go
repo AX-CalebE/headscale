@@ -2,7 +2,9 @@ package apiv2
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/juanfont/headscale/hscontrol/scope"
 	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/juanfont/headscale/hscontrol/util"
+	"gorm.io/gorm"
 )
 
 func init() {
@@ -26,6 +29,8 @@ const (
 	// keyTypeClient is an OAuth client (client-credentials). Multiplexed onto the
 	// keys resource exactly as Tailscale does.
 	keyTypeClient = "client"
+	// keyTypeFederated is a federated identity (workload identity federation).
+	keyTypeFederated = "federated"
 )
 
 // KeyCapabilities maps a resource to the actions a key permits. Headscale
@@ -63,7 +68,7 @@ type CreateKeyRequest struct {
 	// Unknown properties are ignored, as Tailscale's API does.
 	_ struct{} `additionalProperties:"true"`
 
-	KeyType string `doc:"Key kind: \"auth\" (default) or \"client\" (OAuth client)." json:"keyType,omitempty"`
+	KeyType string `doc:"Key kind: \"auth\" (default), \"client\" (OAuth client) or \"federated\" (federated identity)." json:"keyType,omitempty"`
 	// Capabilities is optional: an auth key carries device-create capabilities,
 	// but an OAuth client (keyType:"client") has none and the Tailscale clients
 	// omit the field entirely, so it must not be required.
@@ -72,27 +77,37 @@ type CreateKeyRequest struct {
 	Description   string           `json:"description,omitempty"                                                         maxLength:"50"`
 	// Scopes and Tags are top-level and apply only to keyType "client" (an OAuth
 	// client). Auth-key tags live under Capabilities.Devices.Create.Tags.
-	Scopes []string `doc:"OAuth scopes granted to the client. keyType=client only." json:"scopes,omitempty"`
-	Tags   []string `doc:"Tags the client may assign. keyType=client only."         json:"tags,omitempty"`
+	Scopes []string `doc:"OAuth scopes granted to the client or federated identity. keyType=client or federated." json:"scopes,omitempty"`
+	Tags   []string `doc:"Tags the client or federated identity may assign. keyType=client or federated."         json:"tags,omitempty"`
+
+	Issuer           string            `doc:"https:// issuer of the OIDC tokens to exchange. keyType=federated only."                 json:"issuer,omitempty"`
+	Subject          string            `doc:"Pattern the sub claim must match; * matches any characters. keyType=federated only."     json:"subject,omitempty"`
+	Audience         string            `doc:"Value the aud claim must contain; generated when omitted. keyType=federated only."       json:"audience,omitempty"`
+	CustomClaimRules map[string]string `doc:"Further claims (dotted paths) and the patterns they must match. keyType=federated only." json:"customClaimRules,omitempty"`
 }
 
-// Key is the Tailscale key response, shared by auth keys and OAuth clients.
-// expirySeconds is emitted in seconds to match the Tailscale spec; the secret
-// key is present only at creation.
+// Key is the Tailscale key response, shared by auth keys, OAuth clients and
+// federated identities. expirySeconds is emitted in seconds to match the
+// Tailscale spec; the secret key is present only at creation.
 type Key struct {
-	ID            string          `json:"id"`
-	KeyType       string          `json:"keyType"`
-	Key           string          `json:"key,omitempty"`
-	Description   string          `json:"description,omitempty"`
-	ExpirySeconds int64           `json:"expirySeconds,omitempty"`
-	Created       time.Time       `json:"created"`
-	Expires       *time.Time      `json:"expires,omitempty"`
-	Revoked       *time.Time      `json:"revoked,omitempty"`
-	Invalid       bool            `json:"invalid"`
-	Capabilities  KeyCapabilities `json:"capabilities"`
-	Scopes        []string        `json:"scopes,omitempty"`
-	Tags          []string        `json:"tags,omitempty"`
-	UserID        string          `json:"userId,omitempty"`
+	ID               string            `json:"id"`
+	KeyType          string            `json:"keyType"`
+	Key              string            `json:"key,omitempty"`
+	Description      string            `json:"description,omitempty"`
+	ExpirySeconds    int64             `json:"expirySeconds,omitempty"`
+	Created          time.Time         `json:"created"`
+	Updated          *time.Time        `json:"updated,omitempty"`
+	Expires          *time.Time        `json:"expires,omitempty"`
+	Revoked          *time.Time        `json:"revoked,omitempty"`
+	Invalid          *bool             `json:"invalid,omitempty"`
+	Capabilities     *KeyCapabilities  `json:"capabilities,omitempty"`
+	Scopes           []string          `json:"scopes,omitempty"`
+	Tags             []string          `json:"tags,omitempty"`
+	Audience         string            `json:"audience,omitempty"`
+	Issuer           string            `json:"issuer,omitempty"`
+	Subject          string            `json:"subject,omitempty"`
+	CustomClaimRules map[string]string `json:"customClaimRules,omitzero"`
+	UserID           string            `json:"userId,omitempty"`
 }
 
 type (
@@ -103,12 +118,18 @@ type (
 
 	listKeysInput struct {
 		Tailnet string `path:"tailnet"`
-		All     bool   `doc:"Without it, a token sees only the auth keys tokens made." query:"all"`
+		All     bool   `doc:"Without it, federated identities are left out, and a token sees only the auth keys tokens made." query:"all"`
 	}
 
 	keyByIDInput struct {
 		Tailnet string `path:"tailnet"`
 		KeyID   string `path:"keyId"`
+	}
+
+	setTrustKeyInput struct {
+		Tailnet string `path:"tailnet"`
+		KeyID   string `path:"keyId"`
+		Body    CreateKeyRequest
 	}
 
 	keyOutput struct {
@@ -137,8 +158,8 @@ func registerKeys(api huma.API, b Backend) {
 		OperationID:  "createKey",
 		Method:       http.MethodPost,
 		Path:         "/api/v2/tailnet/{tailnet}/keys",
-		Summary:      "Create an auth key or OAuth client",
-		Description:  "Requires the `auth_keys` scope for an auth key, or `oauth_keys` for an OAuth client (an admin API key is all-access).",
+		Summary:      "Create an auth key, OAuth client or federated identity",
+		Description:  "Requires the `auth_keys` scope for an auth key, `oauth_keys` for an OAuth client, or `federated_keys` for a federated identity (an admin API key is all-access).",
 		Tags:         keysTags,
 		Security:     security,
 		Middlewares:  huma.Middlewares{requireCreateKeyScope(api)},
@@ -158,6 +179,8 @@ func registerKeys(api huma.API, b Backend) {
 		switch in.Body.KeyType {
 		case keyTypeClient:
 			return createOAuthClient(ctx, b, in.Body)
+		case keyTypeFederated:
+			return createFederatedIdentity(ctx, b, in.Body)
 		case "", keyTypeAuth:
 			return createAuthKey(ctx, b, in.Body)
 		default:
@@ -171,8 +194,8 @@ func registerKeys(api huma.API, b Backend) {
 		OperationID: "listKeys",
 		Method:      http.MethodGet,
 		Path:        "/api/v2/tailnet/{tailnet}/keys",
-		Summary:     "List auth keys and OAuth clients",
-		Description: "A token sees the kinds it can read: `auth_keys:read` for auth keys, `oauth_keys:read` for OAuth clients (an admin API key sees all).",
+		Summary:     "List auth keys, OAuth clients and federated identities",
+		Description: "A token sees the kinds it can read: `auth_keys:read` for auth keys, `oauth_keys:read` for OAuth clients, `federated_keys:read` for federated identities (an admin API key sees all). Federated identities are listed only with `all=true`.",
 		Tags:        keysTags,
 		Security:    security,
 		Errors: []int{
@@ -222,15 +245,15 @@ func registerKeys(api huma.API, b Backend) {
 			}
 		}
 
-		return out, nil
+		return out, appendFederatedIdentityKeys(&out.Body.Keys, b, scopes, isOAuth, in.All)
 	})
 
 	huma.Register(api, huma.Operation{
 		OperationID: "getKey",
 		Method:      http.MethodGet,
 		Path:        "/api/v2/tailnet/{tailnet}/keys/{keyId}",
-		Summary:     "Get an auth key or OAuth client",
-		Description: "Requires `auth_keys:read` for an auth key, or `oauth_keys:read` for an OAuth client (an admin API key is all-access).",
+		Summary:     "Get an auth key, OAuth client or federated identity",
+		Description: "Requires `auth_keys:read` for an auth key, `oauth_keys:read` for an OAuth client, or `federated_keys:read` for a federated identity (an admin API key is all-access).",
 		Tags:        keysTags,
 		Security:    security,
 		Errors: []int{
@@ -244,16 +267,13 @@ func registerKeys(api huma.API, b Backend) {
 			return nil, err
 		}
 
-		// An OAuth client id is a hex string distinct from a numeric auth-key id,
-		// so a client lookup that hits is authoritative; otherwise fall through to
-		// the auth-key path. The lookup is gated on the caller actually holding
-		// oauth_keys:read so a token without it cannot tell a real client id (403)
-		// from an unknown key (404) — i.e. no client-existence oracle.
-		if requireKeyScope(ctx, scope.OAuthKeysRead) == nil {
-			client, err := b.State.GetOAuthClientByClientID(in.KeyID)
-			if err == nil {
-				return &keyOutput{Body: oauthClientToKey(client, "")}, nil
-			}
+		out, err := getTrustCredentialKey(ctx, b, in.KeyID)
+		if err != nil {
+			return nil, err
+		}
+
+		if out != nil {
+			return out, nil
 		}
 
 		err = requireKeyScope(ctx, scope.AuthKeysRead)
@@ -273,8 +293,8 @@ func registerKeys(api huma.API, b Backend) {
 		OperationID:   "deleteKey",
 		Method:        http.MethodDelete,
 		Path:          "/api/v2/tailnet/{tailnet}/keys/{keyId}",
-		Summary:       "Delete an auth key or OAuth client",
-		Description:   "Requires the `auth_keys` scope for an auth key, or `oauth_keys` for an OAuth client (an admin API key is all-access).",
+		Summary:       "Delete an auth key, OAuth client or federated identity",
+		Description:   "Requires the `auth_keys` scope for an auth key, `oauth_keys` for an OAuth client, or `federated_keys` for a federated identity (an admin API key is all-access).",
 		Tags:          keysTags,
 		Security:      security,
 		DefaultStatus: http.StatusOK,
@@ -289,18 +309,13 @@ func registerKeys(api huma.API, b Backend) {
 			return nil, err
 		}
 
-		// Gated on oauth_keys (write) for the same no-existence-oracle reason as
-		// getKey: a token without it must not learn that an id is an OAuth client.
-		if requireKeyScope(ctx, scope.OAuthKeys) == nil {
-			_, err = b.State.GetOAuthClientByClientID(in.KeyID)
-			if err == nil {
-				err = b.State.RevokeOAuthClient(in.KeyID)
-				if err != nil {
-					return nil, mapError("deleting oauth client", err)
-				}
+		deleted, err := deleteTrustCredentialKey(ctx, b, in.KeyID)
+		if err != nil {
+			return nil, err
+		}
 
-				return &deleteKeyOutput{}, nil
-			}
+		if deleted {
+			return &deleteKeyOutput{}, nil
 		}
 
 		err = requireKeyScope(ctx, scope.AuthKeys)
@@ -322,6 +337,25 @@ func registerKeys(api huma.API, b Backend) {
 		}
 
 		return &deleteKeyOutput{}, nil
+	})
+
+	huma.Register(api, requireScope(huma.Operation{
+		OperationID:  "setKey",
+		Method:       http.MethodPut,
+		Path:         "/api/v2/tailnet/{tailnet}/keys/{keyId}",
+		Summary:      "Set a federated identity",
+		Description:  "Replaces a federated identity's configuration. Only keyType `federated` is supported.",
+		Tags:         keysTags,
+		Security:     security,
+		MaxBodyBytes: maxBodyBytes,
+		Errors: []int{
+			http.StatusBadRequest,
+			http.StatusUnauthorized,
+			http.StatusForbidden,
+			http.StatusNotFound,
+		},
+	}, scope.FederatedKeys), func(ctx context.Context, in *setTrustKeyInput) (*keyOutput, error) {
+		return setFederatedIdentity(ctx, b, in)
 	})
 }
 
@@ -353,9 +387,10 @@ func requireKeyScope(ctx context.Context, need scope.Scope) error {
 func requireCreateKeyScope(api huma.API) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
 		if requireKeyScope(ctx.Context(), scope.AuthKeys) != nil &&
-			requireKeyScope(ctx.Context(), scope.OAuthKeys) != nil {
+			requireKeyScope(ctx.Context(), scope.OAuthKeys) != nil &&
+			requireKeyScope(ctx.Context(), scope.FederatedKeys) != nil {
 			_ = huma.WriteErr(api, ctx, http.StatusForbidden,
-				"token is missing the required scope auth_keys or oauth_keys")
+				"token is missing the required scope auth_keys, oauth_keys or federated_keys")
 
 			return
 		}
@@ -467,52 +502,9 @@ func createOAuthClient(ctx context.Context, b Backend, body CreateKeyRequest) (*
 		return nil, err
 	}
 
-	if len(body.Scopes) == 0 {
-		return nil, huma.Error400BadRequest("an OAuth client must declare at least one scope")
-	}
-
-	// Tailscale: tags are mandatory when the scopes include devices:core or
-	// auth_keys, because such a client mints tagged, tailnet-owned credentials.
-	if scope.RequiresTags(scope.Parse(body.Scopes)) && len(body.Tags) == 0 {
-		return nil, huma.Error400BadRequest(
-			"tags are required when scopes include devices:core or auth_keys",
-		)
-	}
-
-	// A client created by an OAuth token may not be granted authority the token
-	// lacks: its scopes must each be within the token's grant, and its tags within
-	// the token's tags and defined in policy (matching SetNodeTags). Otherwise an
-	// oauth_keys token could mint an all-access client and escalate. An admin API
-	// key (not an OAuth token) is unrestricted and keeps the historical tag
-	// behaviour (syntax-only validation).
-	if tokenScopes, isOAuth := principalScopes(ctx); isOAuth {
-		for _, s := range body.Scopes {
-			if !scope.Grants(scope.Parse(tokenScopes), scope.Scope(s)) {
-				return nil, huma.Error403Forbidden(
-					"client may not be granted scope " + s + " beyond the creating token",
-				)
-			}
-		}
-
-		tokenTags, _ := principalTags(ctx)
-
-		// An untagged "all" client may mint tokens for any tag (narrowTags), so a
-		// tag-limited token would escape its tags one client away.
-		if len(tokenTags) > 0 && canAssignAnyTag(body.Tags, body.Scopes) {
-			return nil, huma.Error403Forbidden(
-				"client may not be granted scope all without tags by a tagged token",
-			)
-		}
-
-		for _, tag := range body.Tags {
-			if !b.State.TagExists(tag) {
-				return nil, huma.Error400BadRequest("tag " + tag + " is not defined in policy")
-			}
-		}
-
-		if refused := unownedTags(b, body.Tags, tokenTags); len(refused) > 0 {
-			return nil, tagsRefused("", refused)
-		}
+	err = checkTrustCredentialGrant(ctx, b, oauthClientNoun, body.Scopes, body.Tags)
+	if err != nil {
+		return nil, err
 	}
 
 	var creator *uint
@@ -528,6 +520,232 @@ func createOAuthClient(ctx context.Context, b Backend, body CreateKeyRequest) (*
 	}
 
 	return &keyOutput{Body: oauthClientToKey(client, secret)}, nil
+}
+
+// appendFederatedIdentityKeys appends federated identities to a list with all=true for a caller holding federated_keys:read.
+func appendFederatedIdentityKeys(keys *[]Key, b Backend, scopes []string, isOAuth, all bool) error {
+	if !all || (isOAuth && !scope.Grants(scope.Parse(scopes), scope.FederatedKeysRead)) {
+		return nil
+	}
+
+	fis, err := b.State.ListFederatedIdentities()
+	if err != nil {
+		return huma.Error500InternalServerError("listing federated identities", err)
+	}
+
+	for i := range fis {
+		*keys = append(*keys, federatedIdentityToKey(&fis[i]))
+	}
+
+	return nil
+}
+
+// trustCredential returns the OAuth client or federated identity id names; both are nil if it names neither.
+func trustCredential(b Backend, id string) (*types.OAuthClient, *types.FederatedIdentity, error) {
+	client, fi, err := b.State.GetTokenIssuer(id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil, nil
+	}
+
+	if err != nil {
+		return nil, nil, huma.Error500InternalServerError("looking up key", err)
+	}
+
+	return client, fi, nil
+}
+
+// getTrustCredentialKey returns the trust credential id names, or nil if none or the caller lacks read scope for its kind.
+func getTrustCredentialKey(ctx context.Context, b Backend, id string) (*keyOutput, error) {
+	client, fi, err := trustCredential(b, id)
+	if err != nil {
+		return nil, err
+	}
+
+	switch {
+	case client != nil && requireKeyScope(ctx, scope.OAuthKeysRead) == nil:
+		return &keyOutput{Body: oauthClientToKey(client, "")}, nil
+	case fi != nil && requireKeyScope(ctx, scope.FederatedKeysRead) == nil:
+		return &keyOutput{Body: federatedIdentityToKey(fi)}, nil
+	}
+
+	return nil, nil //nolint:nilnil // Not a trust credential the caller may read; the caller tries an auth key.
+}
+
+// deleteTrustCredentialKey deletes the trust credential id names, reporting false if none or the caller lacks write scope.
+func deleteTrustCredentialKey(ctx context.Context, b Backend, id string) (bool, error) {
+	client, fi, err := trustCredential(b, id)
+	if err != nil {
+		return false, err
+	}
+
+	switch {
+	case client != nil && requireKeyScope(ctx, scope.OAuthKeys) == nil:
+		err = b.State.RevokeOAuthClient(id)
+		if err != nil {
+			return false, mapError("deleting oauth client", err)
+		}
+
+		return true, nil
+	case fi != nil && requireKeyScope(ctx, scope.FederatedKeys) == nil:
+		err = b.State.DeleteFederatedIdentity(id)
+		if err != nil {
+			return false, mapError("deleting federated identity", err)
+		}
+
+		b.verifiers.forget(fi.Issuer)
+
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func setFederatedIdentity(ctx context.Context, b Backend, in *setTrustKeyInput) (*keyOutput, error) {
+	err := requireDefaultTailnet(in.Tailnet)
+	if err != nil {
+		return nil, err
+	}
+
+	if in.Body.KeyType != keyTypeFederated {
+		return nil, huma.Error400BadRequest(
+			"invalid key type, " + strconv.Quote(in.Body.KeyType) + " is not supported",
+		)
+	}
+
+	err = checkTrustCredentialGrant(ctx, b, federatedIdentityNoun, in.Body.Scopes, in.Body.Tags)
+	if err != nil {
+		return nil, err
+	}
+
+	old, err := b.State.GetFederatedIdentity(in.KeyID)
+	if err != nil {
+		return nil, mapError("looking up federated identity", err)
+	}
+
+	fi, err := b.State.UpdateFederatedIdentity(in.KeyID, federatedIdentityFromRequest(in.Body))
+	if err != nil {
+		return nil, mapError("updating federated identity", err)
+	}
+
+	b.verifiers.forget(old.Issuer)
+	b.verifiers.forget(fi.Issuer)
+
+	return &keyOutput{Body: federatedIdentityToKey(fi)}, nil
+}
+
+// createFederatedIdentity creates a federated identity (keyType:"federated").
+func createFederatedIdentity(ctx context.Context, b Backend, body CreateKeyRequest) (*keyOutput, error) {
+	err := requireKeyScope(ctx, scope.FederatedKeys)
+	if err != nil {
+		return nil, err
+	}
+
+	err = checkTrustCredentialGrant(ctx, b, federatedIdentityNoun, body.Scopes, body.Tags)
+	if err != nil {
+		return nil, err
+	}
+
+	fi := federatedIdentityFromRequest(body)
+
+	if uid, ok := ownerUser(ctx); ok {
+		u := uint(uid)
+		fi.UserID = &u
+	}
+
+	created, err := b.State.CreateFederatedIdentity(fi, federatedAudiencePrefix(b))
+	if err != nil {
+		return nil, mapError("creating federated identity", err)
+	}
+
+	return &keyOutput{Body: federatedIdentityToKey(created)}, nil
+}
+
+// federatedAudiencePrefix is server_url's host, which prefixes a generated audience as api.tailscale.com does Tailscale's.
+func federatedAudiencePrefix(b Backend) string {
+	if b.Cfg == nil {
+		return ""
+	}
+
+	u, err := url.Parse(b.Cfg.ServerURL)
+	if err != nil {
+		return ""
+	}
+
+	return u.Host
+}
+
+func federatedIdentityFromRequest(body CreateKeyRequest) types.FederatedIdentity {
+	return types.FederatedIdentity{
+		Issuer:           body.Issuer,
+		Subject:          body.Subject,
+		Audience:         body.Audience,
+		CustomClaimRules: body.CustomClaimRules,
+		Description:      body.Description,
+		Scopes:           body.Scopes,
+		Tags:             body.Tags,
+	}
+}
+
+// The resource names checkTrustCredentialGrant's messages use.
+const (
+	oauthClientNoun       = "an OAuth client"
+	federatedIdentityNoun = "a federated identity"
+)
+
+// checkTrustCredentialGrant validates a trust credential's scopes and tags, refusing authority beyond a creating token's.
+func checkTrustCredentialGrant(ctx context.Context, b Backend, noun string, scopes, tags []string) error {
+	if len(scopes) == 0 {
+		return huma.Error400BadRequest(noun + " must declare at least one scope")
+	}
+
+	// Tailscale: tags are mandatory when the scopes include devices:core or
+	// auth_keys, because such a client mints tagged, tailnet-owned credentials.
+	if scope.RequiresTags(scope.Parse(scopes)) && len(tags) == 0 {
+		return huma.Error400BadRequest(
+			"tags are required when scopes include devices:core or auth_keys",
+		)
+	}
+
+	// A client created by an OAuth token may not be granted authority the token
+	// lacks: its scopes must each be within the token's grant, and its tags within
+	// the token's tags and defined in policy (matching SetNodeTags). Otherwise an
+	// oauth_keys token could mint an all-access client and escalate. An admin API
+	// key (not an OAuth token) is unrestricted and keeps the historical tag
+	// behaviour (syntax-only validation).
+	tokenScopes, isOAuth := principalScopes(ctx)
+	if !isOAuth {
+		return nil
+	}
+
+	for _, s := range scopes {
+		if !scope.Grants(scope.Parse(tokenScopes), scope.Scope(s)) {
+			return huma.Error403Forbidden(
+				noun + " may not be granted scope " + s + " beyond the creating token",
+			)
+		}
+	}
+
+	tokenTags, _ := principalTags(ctx)
+
+	// An untagged "all" client may mint tokens for any tag (narrowTags), so a
+	// tag-limited token would escape its tags one client away.
+	if len(tokenTags) > 0 && canAssignAnyTag(tags, scopes) {
+		return huma.Error403Forbidden(
+			noun + " may not be granted scope all without tags by a tagged token",
+		)
+	}
+
+	for _, tag := range tags {
+		if !b.State.TagExists(tag) {
+			return huma.Error400BadRequest("tag " + tag + " is not defined in policy")
+		}
+	}
+
+	if refused := unownedTags(b, tags, tokenTags); len(refused) > 0 {
+		return tagsRefused("", refused)
+	}
+
+	return nil
 }
 
 // findKeyByID looks up a stored pre-auth key by its (stringified) id with a
@@ -563,6 +781,7 @@ func keyFromNew(pak *types.PreAuthKeyNew, req CreateKeyRequest) Key {
 		Key:         pak.Key,
 		Description: req.Description,
 		Created:     timeOrZero(pak.CreatedAt),
+		Invalid:     new(false),
 		Capabilities: capabilities(
 			create.Reusable,
 			create.Ephemeral,
@@ -595,7 +814,7 @@ func keyFromStored(pak *types.PreAuthKey) Key {
 		KeyType:      keyTypeAuth,
 		Description:  pak.Description,
 		Created:      timeOrZero(pak.CreatedAt),
-		Invalid:      pak.Validate() != nil,
+		Invalid:      new(pak.Validate() != nil),
 		Capabilities: capabilities(pak.Reusable, pak.Ephemeral, true, pak.Tags),
 		Tags:         pak.Tags,
 	}
@@ -621,18 +840,16 @@ func keyFromStored(pak *types.PreAuthKey) Key {
 // (the secret is never re-exposed).
 func oauthClientToKey(client *types.OAuthClient, secret string) Key {
 	key := Key{
-		ID:          client.ClientID,
-		KeyType:     keyTypeClient,
-		Key:         secret,
-		Description: client.Description,
-		Created:     timeOrZero(client.CreatedAt),
-		Scopes:      emptyIfNil(client.Scopes),
-		Tags:        emptyIfNil(client.Tags),
-	}
-
-	if client.Revoked != nil {
-		key.Revoked = client.Revoked
-		key.Invalid = true
+		ID:           client.ClientID,
+		KeyType:      keyTypeClient,
+		Key:          secret,
+		Description:  client.Description,
+		Created:      timeOrZero(client.CreatedAt),
+		Invalid:      new(client.Revoked != nil),
+		Revoked:      client.Revoked,
+		Capabilities: &KeyCapabilities{},
+		Scopes:       emptyIfNil(client.Scopes),
+		Tags:         emptyIfNil(client.Tags),
 	}
 
 	if client.UserID != nil {
@@ -642,11 +859,38 @@ func oauthClientToKey(client *types.OAuthClient, secret string) Key {
 	return key
 }
 
+// federatedIdentityToKey builds the keys response for a federated identity.
+func federatedIdentityToKey(fi *types.FederatedIdentity) Key {
+	key := Key{
+		ID:               fi.ClientID,
+		KeyType:          keyTypeFederated,
+		Description:      fi.Description,
+		Created:          timeOrZero(fi.CreatedAt),
+		Updated:          fi.UpdatedAt,
+		Scopes:           emptyIfNil(fi.Scopes),
+		Tags:             emptyIfNil(fi.Tags),
+		Audience:         fi.Audience,
+		Issuer:           fi.Issuer,
+		Subject:          fi.Subject,
+		CustomClaimRules: fi.CustomClaimRules,
+	}
+
+	if key.CustomClaimRules == nil {
+		key.CustomClaimRules = map[string]string{}
+	}
+
+	if fi.UserID != nil {
+		key.UserID = strconv.FormatUint(uint64(*fi.UserID), util.Base10)
+	}
+
+	return key
+}
+
 func capabilities(
 	reusable, ephemeral, preauthorized bool,
 	tags []string,
-) KeyCapabilities {
-	return KeyCapabilities{
+) *KeyCapabilities {
+	return &KeyCapabilities{
 		Devices: KeyDeviceCapabilities{Create: KeyDeviceCreateCapabilities{
 			Reusable:      reusable,
 			Ephemeral:     ephemeral,

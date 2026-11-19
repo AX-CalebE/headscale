@@ -194,7 +194,8 @@ func TestAPIv2OAuthMatrix_CreateKeyScopeBeforeBody(t *testing.T) {
 
 	for _, s := range scope.Known() {
 		held := []scope.Scope{s}
-		mayCreate := scope.Grants(held, scope.AuthKeys) || scope.Grants(held, scope.OAuthKeys)
+		mayCreate := scope.Grants(held, scope.AuthKeys) || scope.Grants(held, scope.OAuthKeys) ||
+			scope.Grants(held, scope.FederatedKeys)
 
 		status, body := apiReq(t, http.MethodPost, baseURL+"/api/v2/tailnet/-/keys",
 			mintScopedToken(t, baseURL, admin, s), invalid)

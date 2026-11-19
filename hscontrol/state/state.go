@@ -2309,11 +2309,6 @@ func (s *State) AuthenticateOAuthClient(secret string) (*types.OAuthClient, erro
 	return s.db.AuthenticateOAuthClient(secret)
 }
 
-// GetOAuthClientByClientID returns an OAuth client by its public client id.
-func (s *State) GetOAuthClientByClientID(clientID string) (*types.OAuthClient, error) {
-	return s.db.GetOAuthClientByClientID(clientID)
-}
-
 // ListOAuthClients returns every OAuth client.
 func (s *State) ListOAuthClients() ([]types.OAuthClient, error) {
 	return s.db.ListOAuthClients()
@@ -2333,6 +2328,41 @@ func (s *State) MintAccessToken(clientID string, scopes, tags []string, expirati
 // its granted scopes and tags.
 func (s *State) AuthenticateAccessToken(token string) (*types.OAuthAccessToken, error) {
 	return s.db.AuthenticateAccessToken(token)
+}
+
+// CreateFederatedIdentity stores a new federated identity; an empty audience becomes audiencePrefix/<client id>.
+func (s *State) CreateFederatedIdentity(fi types.FederatedIdentity, audiencePrefix string) (*types.FederatedIdentity, error) {
+	return s.db.CreateFederatedIdentity(fi, audiencePrefix)
+}
+
+// GetTokenIssuer returns the OAuth client or the federated identity clientID names; the other is nil.
+func (s *State) GetTokenIssuer(clientID string) (*types.OAuthClient, *types.FederatedIdentity, error) {
+	return s.db.GetTokenIssuer(clientID)
+}
+
+// GetFederatedIdentity returns a federated identity by its client id.
+func (s *State) GetFederatedIdentity(clientID string) (*types.FederatedIdentity, error) {
+	return s.db.GetFederatedIdentity(clientID)
+}
+
+// ExchangeFederatedToken mints an access token for a federated identity that admit accepts as stored at mint time.
+func (s *State) ExchangeFederatedToken(clientID string, admit func(*types.FederatedIdentity) error, expiration *time.Time) (string, *types.OAuthAccessToken, error) {
+	return s.db.ExchangeFederatedToken(clientID, admit, expiration)
+}
+
+// ListFederatedIdentities returns every federated identity.
+func (s *State) ListFederatedIdentities() ([]types.FederatedIdentity, error) {
+	return s.db.ListFederatedIdentities()
+}
+
+// UpdateFederatedIdentity replaces a federated identity's trust settings.
+func (s *State) UpdateFederatedIdentity(clientID string, update types.FederatedIdentity) (*types.FederatedIdentity, error) {
+	return s.db.UpdateFederatedIdentity(clientID, update)
+}
+
+// DeleteFederatedIdentity deletes a federated identity and the access tokens exchanged through it.
+func (s *State) DeleteFederatedIdentity(clientID string) error {
+	return s.db.DeleteFederatedIdentity(clientID)
 }
 
 // TagOwnedByTags reports whether a credential holding ownerTags may apply tag,

@@ -7,6 +7,7 @@ package types
 
 import (
 	"database/sql"
+	"maps"
 	"net/netip"
 	"time"
 
@@ -184,8 +185,12 @@ func (src *Credential) Clone() *Credential {
 	if dst.LastSeen != nil {
 		dst.LastSeen = new(*src.LastSeen)
 	}
+	dst.CustomClaimRules = maps.Clone(src.CustomClaimRules)
 	if dst.CreatedAt != nil {
 		dst.CreatedAt = new(*src.CreatedAt)
+	}
+	if dst.UpdatedAt != nil {
+		dst.UpdatedAt = new(*src.UpdatedAt)
 	}
 	if dst.Expiration != nil {
 		dst.Expiration = new(*src.Expiration)
@@ -198,22 +203,27 @@ func (src *Credential) Clone() *Credential {
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _CredentialCloneNeedsRegeneration = Credential(struct {
-	ID             uint64
-	Kind           CredentialKind
-	Identifier     string
-	Hash           []byte
-	UserID         *uint
-	User           *User
-	Description    string
-	Scopes         []string
-	Tags           []string
-	Reusable       bool
-	Ephemeral      bool
-	Used           bool
-	LastSeen       *time.Time
-	ClientID       string
-	CreatedByToken bool
-	CreatedAt      *time.Time
-	Expiration     *time.Time
-	Revoked        *time.Time
+	ID               uint64
+	Kind             CredentialKind
+	Identifier       string
+	Hash             []byte
+	UserID           *uint
+	User             *User
+	Description      string
+	Scopes           []string
+	Tags             []string
+	Reusable         bool
+	Ephemeral        bool
+	Used             bool
+	LastSeen         *time.Time
+	ClientID         string
+	CreatedByToken   bool
+	Issuer           string
+	Subject          string
+	Audience         string
+	CustomClaimRules map[string]string
+	CreatedAt        *time.Time
+	UpdatedAt        *time.Time
+	Expiration       *time.Time
+	Revoked          *time.Time
 }{})
